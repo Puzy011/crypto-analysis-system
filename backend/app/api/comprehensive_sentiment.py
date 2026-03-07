@@ -11,6 +11,9 @@ from datetime import datetime
 from app.services.comprehensive_sentiment_service import (
     get_comprehensive_sentiment_service
 )
+from app.services.sentiment_scheduler_service import (
+    get_sentiment_scheduler_service,
+)
 from app.services.binance_service import BinanceService
 
 
@@ -142,6 +145,7 @@ async def get_full_sentiment_analysis(
     """
     try:
         comp_service = get_comprehensive_sentiment_service()
+        scheduler_service = get_sentiment_scheduler_service()
 
         # 1. 获取新闻（真实 + 自动降级）
         news_list = comp_service.fetch_market_news(symbol, limit=news_count, hours=120)
@@ -185,6 +189,11 @@ async def get_full_sentiment_analysis(
             news_list=news_list,
             price_data=df
         )
+        multi_platform_snapshot = await scheduler_service.get_or_collect_latest(
+            symbol=symbol,
+            freshness_seconds=20 * 60,
+        )
+        time_analysis = scheduler_service.analyze_timeline(symbol)
         
         return {
             "symbol": symbol,
@@ -197,7 +206,96 @@ async def get_full_sentiment_analysis(
                 "textrank": [{"word": word, "score": float(score)} for word, score in textrank_keywords]
             },
             "news_price_impact": impact_report,
+            "multi_platform": multi_platform_snapshot,
+            "time_analysis": time_analysis,
             "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/collect/{symbol}")
+async def collect_multi_platform_sentiment(
+    symbol: str = "BTCUSDT",
+):
+    """
+    手动触发一次多平台舆情采集
+    """
+    try:
+        scheduler_service = get_sentiment_scheduler_service()
+        snapshot = await scheduler_service.collect_once(symbol=symbol, force_refresh=True)
+        timeline_analysis = scheduler_service.analyze_timeline(symbol)
+        return {
+            "symbol": symbol.upper(),
+            "snapshot": snapshot,
+            "time_analysis": timeline_analysis,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/multi-platform/{symbol}")
+async def get_multi_platform_snapshot(
+    symbol: str = "BTCUSDT",
+    freshness_seconds: int = Query(1200, ge=60, le=7200, description="最大可接受数据新鲜度(秒)"),
+):
+    """
+    获取多平台舆情快照（新闻+Reddit+公告）
+    """
+    try:
+        scheduler_service = get_sentiment_scheduler_service()
+        snapshot = await scheduler_service.get_or_collect_latest(
+            symbol=symbol,
+            freshness_seconds=freshness_seconds,
+        )
+        return {
+            "symbol": symbol.upper(),
+            "multi_platform": snapshot,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/timeline/{symbol}")
+async def get_multi_platform_timeline(
+    symbol: str = "BTCUSDT",
+    hours: int = Query(24, ge=1, le=240, description="时间窗口(小时)"),
+    limit: int = Query(240, ge=10, le=2000, description="最多返回点数"),
+):
+    """
+    获取多平台舆情时间线与趋势分析
+    """
+    try:
+        scheduler_service = get_sentiment_scheduler_service()
+        if not scheduler_service.get_timeline(symbol, hours=hours, limit=1):
+            await scheduler_service.collect_once(symbol=symbol, force_refresh=True)
+
+        timeline = scheduler_service.get_timeline(symbol=symbol, hours=hours, limit=limit)
+        analysis = scheduler_service.analyze_timeline(symbol=symbol)
+        return {
+            "symbol": symbol.upper(),
+            "hours": hours,
+            "points": len(timeline),
+            "timeline": timeline,
+            "time_analysis": analysis,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scheduler-status")
+async def get_scheduler_status():
+    """
+    获取舆情调度器运行状态
+    """
+    try:
+        scheduler_service = get_sentiment_scheduler_service()
+        return {
+            "status": scheduler_service.get_scheduler_status(),
+            "timestamp": datetime.now().isoformat(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

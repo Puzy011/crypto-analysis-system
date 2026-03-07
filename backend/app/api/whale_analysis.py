@@ -2,6 +2,7 @@
 巨鲸/庄家分析 API
 """
 
+import asyncio
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
 import pandas as pd
@@ -35,6 +36,41 @@ async def _get_kline_df(symbol: str, interval: str = "1h", limit: int = 240) -> 
     return df
 
 
+def _build_derivatives_metrics(
+    open_interest_data,
+    long_short_series,
+    funding_series,
+    oi_hist_series,
+):
+    long_short_ratio = 0.0
+    if long_short_series:
+        sorted_ls = sorted(long_short_series, key=lambda x: x.get("timestamp", 0))
+        long_short_ratio = float(sorted_ls[-1].get("long_short_ratio", 0.0))
+
+    funding_rate = 0.0
+    if funding_series:
+        sorted_fr = sorted(funding_series, key=lambda x: x.get("timestamp", 0))
+        funding_rate = float(sorted_fr[-1].get("funding_rate", 0.0))
+
+    open_interest = float((open_interest_data or {}).get("open_interest", 0.0) or 0.0)
+    open_interest_change_pct = 0.0
+    if oi_hist_series and len(oi_hist_series) >= 2:
+        sorted_hist = sorted(oi_hist_series, key=lambda x: x.get("timestamp", 0))
+        prev_oi = float(sorted_hist[-2].get("sum_open_interest", 0.0) or 0.0)
+        last_oi = float(sorted_hist[-1].get("sum_open_interest", 0.0) or 0.0)
+        if prev_oi > 0:
+            open_interest_change_pct = (last_oi - prev_oi) / prev_oi
+        if open_interest <= 0:
+            open_interest = last_oi
+
+    return {
+        "open_interest": open_interest,
+        "long_short_ratio": long_short_ratio,
+        "funding_rate": funding_rate,
+        "open_interest_change_pct": float(open_interest_change_pct),
+    }
+
+
 @router.get("/trade-modes")
 async def get_trade_modes():
     """获取支持的交易模式配置"""
@@ -64,8 +100,16 @@ async def detect_large_orders(
     try:
         whale_service = get_whale_analysis_service()
         profile = whale_service.get_trade_profile(trade_type)
-        df = await _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"]))
-        result = whale_service.detect_large_orders(symbol, klines=df, trade_type=profile["trade_type"])
+        df, agg_trades = await asyncio.gather(
+            _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"])),
+            binance_service.get_agg_trades(symbol, limit=1000),
+        )
+        result = whale_service.detect_large_orders(
+            symbol,
+            trades=agg_trades,
+            klines=df,
+            trade_type=profile["trade_type"]
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -82,8 +126,16 @@ async def analyze_order_flow(
     try:
         whale_service = get_whale_analysis_service()
         profile = whale_service.get_trade_profile(trade_type)
-        df = await _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"]))
-        result = whale_service.analyze_order_flow(symbol, df, trade_type=profile["trade_type"])
+        df, order_book = await asyncio.gather(
+            _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"])),
+            binance_service.get_order_book(symbol, limit=100),
+        )
+        result = whale_service.analyze_order_flow(
+            symbol,
+            df,
+            order_book=order_book,
+            trade_type=profile["trade_type"]
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -118,21 +170,54 @@ async def get_full_whale_analysis(
     try:
         whale_service = get_whale_analysis_service()
         profile = whale_service.get_trade_profile(trade_type)
-        df = await _get_kline_df(
-            symbol,
-            interval=profile["interval"],
-            limit=int(profile["limit"])
+        (
+            df,
+            agg_trades,
+            order_book,
+            open_interest_data,
+            long_short_series,
+            funding_series,
+            oi_hist_series,
+        ) = await asyncio.gather(
+            _get_kline_df(
+                symbol,
+                interval=profile["interval"],
+                limit=int(profile["limit"])
+            ),
+            binance_service.get_agg_trades(symbol, limit=1000),
+            binance_service.get_order_book(symbol, limit=100),
+            binance_service.get_futures_open_interest(symbol),
+            binance_service.get_global_long_short_ratio(symbol, period="1h", limit=30),
+            binance_service.get_funding_rate(symbol, limit=20),
+            binance_service.get_open_interest_hist(symbol, period="1h", limit=30),
+        )
+        derivatives = _build_derivatives_metrics(
+            open_interest_data,
+            long_short_series,
+            funding_series,
+            oi_hist_series,
         )
         
         # 执行各项分析
-        large_orders = whale_service.detect_large_orders(symbol, klines=df, trade_type=profile["trade_type"])
-        order_flow = whale_service.analyze_order_flow(symbol, df, trade_type=profile["trade_type"])
+        large_orders = whale_service.detect_large_orders(
+            symbol,
+            trades=agg_trades,
+            klines=df,
+            trade_type=profile["trade_type"]
+        )
+        order_flow = whale_service.analyze_order_flow(
+            symbol,
+            df,
+            order_book=order_book,
+            trade_type=profile["trade_type"]
+        )
         phase = whale_service.detect_manipulation_phase(symbol, df, trade_type=profile["trade_type"])
         smart_money = whale_service.build_smart_money_profile(
             symbol=symbol,
             klines=df,
             large_orders=large_orders,
             order_flow=order_flow,
+            derivatives=derivatives,
             trade_type=profile["trade_type"],
         )
         aice_summary = whale_service.build_aice_style_summary(
@@ -141,6 +226,7 @@ async def get_full_whale_analysis(
             large_orders=large_orders,
             order_flow=order_flow,
             phase_data=phase,
+            derivatives=derivatives,
             trade_type=profile["trade_type"],
         )
         
@@ -150,7 +236,15 @@ async def get_full_whale_analysis(
             large_orders,
             order_flow,
             phase,
+            derivatives=derivatives,
             trade_type=profile["trade_type"],
+        )
+        data_quality = whale_service.build_data_quality_report(
+            symbol=symbol,
+            klines=df,
+            trades=agg_trades,
+            order_book=order_book,
+            derivatives=derivatives,
         )
         
         # 综合判断
@@ -222,6 +316,8 @@ async def get_full_whale_analysis(
             "extreme_30day": aice_summary.get("extreme_30day", []),
             "smart_money": smart_money,
             "smart_money_full": True,
+            "derivatives": derivatives,
+            "data_quality": data_quality,
             "entry_price": aice_summary.get("entry_price"),
             "stop_loss": aice_summary.get("stop_loss"),
             "take_profit": aice_summary.get("take_profit"),
@@ -247,11 +343,43 @@ async def get_whale_alerts_api(
     try:
         whale_service = get_whale_analysis_service()
         profile = whale_service.get_trade_profile(trade_type)
-        df = await _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"]))
+        (
+            df,
+            agg_trades,
+            order_book,
+            open_interest_data,
+            long_short_series,
+            funding_series,
+            oi_hist_series,
+        ) = await asyncio.gather(
+            _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"])),
+            binance_service.get_agg_trades(symbol, limit=1000),
+            binance_service.get_order_book(symbol, limit=100),
+            binance_service.get_futures_open_interest(symbol),
+            binance_service.get_global_long_short_ratio(symbol, period="1h", limit=30),
+            binance_service.get_funding_rate(symbol, limit=20),
+            binance_service.get_open_interest_hist(symbol, period="1h", limit=30),
+        )
+        derivatives = _build_derivatives_metrics(
+            open_interest_data,
+            long_short_series,
+            funding_series,
+            oi_hist_series,
+        )
         
         # 执行各项分析
-        large_orders = whale_service.detect_large_orders(symbol, klines=df, trade_type=profile["trade_type"])
-        order_flow = whale_service.analyze_order_flow(symbol, df, trade_type=profile["trade_type"])
+        large_orders = whale_service.detect_large_orders(
+            symbol,
+            trades=agg_trades,
+            klines=df,
+            trade_type=profile["trade_type"]
+        )
+        order_flow = whale_service.analyze_order_flow(
+            symbol,
+            df,
+            order_book=order_book,
+            trade_type=profile["trade_type"]
+        )
         phase = whale_service.detect_manipulation_phase(symbol, df, trade_type=profile["trade_type"])
         
         # 获取预警
@@ -260,6 +388,7 @@ async def get_whale_alerts_api(
             large_orders,
             order_flow,
             phase,
+            derivatives=derivatives,
             trade_type=profile["trade_type"],
         )
         
@@ -267,6 +396,7 @@ async def get_whale_alerts_api(
             "symbol": symbol,
             "trade_type": profile["trade_type"],
             "trade_type_label": profile["label"],
+            "derivatives": derivatives,
             "alerts": alerts,
             "alert_count": len(alerts),
             "timestamp": datetime.now().isoformat()

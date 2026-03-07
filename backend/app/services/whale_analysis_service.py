@@ -172,10 +172,11 @@ class WhaleAnalysisService:
                 amount = float(trade.get("amount", 0))
                 price = float(trade.get("price", 0))
                 value = price * amount
-                is_buy = bool(trade.get("is_buyer_maker", False))
+                is_buyer_maker = bool(trade.get("is_buyer_maker", False))
                 if value < threshold:
                     continue
-                side = "buy" if is_buy else "sell"
+                # Binance m=true 表示买方为挂单方，即主动成交方向偏卖出
+                side = "sell" if is_buyer_maker else "buy"
                 large_orders.append(
                     {
                         "price": price,
@@ -266,6 +267,7 @@ class WhaleAnalysisService:
             "symbol": symbol,
             "trade_type": profile["trade_type"],
             "trade_type_label": profile["label"],
+            "data_source": "agg_trades" if trades else "kline_estimation",
             "large_order_threshold": threshold,
             "total_large_orders": len(large_orders),
             "buy_orders": buy_count,
@@ -362,6 +364,7 @@ class WhaleAnalysisService:
         self,
         symbol: str,
         klines: pd.DataFrame = None,
+        order_book: Dict[str, Any] = None,
         trade_type: str = "realtime"
     ) -> Dict[str, Any]:
         """
@@ -409,18 +412,35 @@ class WhaleAnalysisService:
             recent["buy_pressure_quote"].sum() / (recent["quoteVolume"].sum() + 1e-8)
         )
         cvd_change = float(recent["cvd"].iloc[-1] - recent["cvd"].iloc[0])
+
+        # 盘口买卖盘不平衡（可提升短线方向判断）
+        book_buy_notional = 0.0
+        book_sell_notional = 0.0
+        book_imbalance = 0.0
+        if order_book and isinstance(order_book, dict):
+            bids = order_book.get("bids", [])[:20]
+            asks = order_book.get("asks", [])[:20]
+            for bid in bids:
+                book_buy_notional += float(bid.get("price", 0)) * float(bid.get("amount", 0))
+            for ask in asks:
+                book_sell_notional += float(ask.get("price", 0)) * float(ask.get("amount", 0))
+            denom = book_buy_notional + book_sell_notional
+            if denom > 0:
+                book_imbalance = float((book_buy_notional - book_sell_notional) / denom)
+
+        combined_imbalance = float(avg_imbalance * 0.75 + book_imbalance * 0.25)
         
         # 4. 确定订单流状态
-        if avg_imbalance > profile["strong_imbalance"] and aggressive_buy_ratio > profile["strong_buy_ratio"]:
+        if combined_imbalance > profile["strong_imbalance"] and aggressive_buy_ratio > profile["strong_buy_ratio"]:
             flow_state = "strong_buy"
             flow_label = "🟢 强势买盘"
-        elif avg_imbalance > profile["moderate_imbalance"]:
+        elif combined_imbalance > profile["moderate_imbalance"]:
             flow_state = "moderate_buy"
             flow_label = "🟢 温和买盘"
-        elif avg_imbalance < -profile["strong_imbalance"] and aggressive_buy_ratio < profile["strong_sell_ratio"]:
+        elif combined_imbalance < -profile["strong_imbalance"] and aggressive_buy_ratio < profile["strong_sell_ratio"]:
             flow_state = "strong_sell"
             flow_label = "🔴 强势卖盘"
-        elif avg_imbalance < -profile["moderate_imbalance"]:
+        elif combined_imbalance < -profile["moderate_imbalance"]:
             flow_state = "moderate_sell"
             flow_label = "🔴 温和卖盘"
         else:
@@ -436,11 +456,16 @@ class WhaleAnalysisService:
             "average_volume": avg_volume,
             "volume_spike_ratio": float(max_volume / avg_volume) if avg_volume > 0 else 0,
             "order_imbalance": avg_imbalance,
+            "combined_imbalance": combined_imbalance,
+            "book_imbalance": book_imbalance,
+            "book_buy_notional": float(book_buy_notional),
+            "book_sell_notional": float(book_sell_notional),
             "net_buy_pressure": float(net_buy_pressure),
             "aggressive_buy_ratio": aggressive_buy_ratio,
             "cvd_change": cvd_change,
-            "buy_dominance": float(max(0, avg_imbalance + 0.5)),
-            "sell_dominance": float(max(0, -avg_imbalance + 0.5)),
+            "buy_dominance": float(max(0, combined_imbalance + 0.5)),
+            "sell_dominance": float(max(0, -combined_imbalance + 0.5)),
+            "data_source": "kline+orderbook" if order_book else "kline",
             "analyzed_at": datetime.now().isoformat()
         }
         
@@ -481,11 +506,16 @@ class WhaleAnalysisService:
             "average_volume": random.uniform(1000, 5000),
             "volume_spike_ratio": random.uniform(1.0, 3.0),
             "order_imbalance": float(order_imbalance),
+            "combined_imbalance": float(order_imbalance),
+            "book_imbalance": float(order_imbalance * 0.6),
+            "book_buy_notional": float(max(0.0, 1_200_000 * (0.5 + order_imbalance))),
+            "book_sell_notional": float(max(0.0, 1_200_000 * (0.5 - order_imbalance))),
             "net_buy_pressure": float(order_imbalance * 10000),
             "aggressive_buy_ratio": float(max(0.0, min(1.0, 0.5 + order_imbalance))),
             "cvd_change": float(order_imbalance * 50000),
             "buy_dominance": float(max(0, order_imbalance + 0.5)),
             "sell_dominance": float(max(0, -order_imbalance + 0.5)),
+            "data_source": "mock",
             "is_mock": True,
             "analyzed_at": datetime.now().isoformat()
         }
@@ -637,6 +667,7 @@ class WhaleAnalysisService:
         klines: pd.DataFrame,
         large_orders: Dict[str, Any],
         order_flow: Dict[str, Any],
+        derivatives: Dict[str, Any] = None,
         trade_type: str = "realtime"
     ) -> Dict[str, Any]:
         """
@@ -718,7 +749,12 @@ class WhaleAnalysisService:
         )
 
         whale_direction = "偏多" if large_orders.get("net_flow", 0) > 0 else ("偏空" if large_orders.get("net_flow", 0) < 0 else "中性")
-        whale_strength = float(min(100, abs(order_flow.get("order_imbalance", 0)) * 260))
+        whale_strength = float(min(100, abs(order_flow.get("combined_imbalance", order_flow.get("order_imbalance", 0))) * 260))
+
+        derivatives = derivatives or {}
+        futures_open_interest = float(derivatives.get("open_interest", 0.0) or 0.0)
+        futures_ls_ratio = float(derivatives.get("long_short_ratio", 0.0) or 0.0)
+        funding_rate = float(derivatives.get("funding_rate", 0.0) or 0.0)
 
         return {
             "symbol": symbol,
@@ -749,6 +785,9 @@ class WhaleAnalysisService:
             "short_whales_avg_price": float(short_whales_avg_price),
             "long_whales_profit_ratio": long_whales_profit_ratio,
             "short_whales_profit_ratio": short_whales_profit_ratio,
+            "futures_open_interest_m": futures_open_interest / 1_000_000 if futures_open_interest else 0.0,
+            "futures_long_short_ratio": futures_ls_ratio,
+            "funding_rate": funding_rate,
         }
 
     def detect_extreme_events(
@@ -793,12 +832,14 @@ class WhaleAnalysisService:
         large_orders: Dict[str, Any],
         order_flow: Dict[str, Any],
         phase_data: Dict[str, Any],
+        derivatives: Dict[str, Any] = None,
         trade_type: str = "realtime"
     ) -> Dict[str, Any]:
         """
         输出 aice100 风格核心字段：方向/动作/建议/风险/信号解释。
         """
         profile = self.get_trade_profile(trade_type)
+        derivatives = derivatives or {}
         if klines is None or klines.empty:
             return {}
         current_price = float(klines["close"].iloc[-1])
@@ -833,6 +874,20 @@ class WhaleAnalysisService:
         elif phase in {"distribution", "washout"}:
             bearish_score += 1
 
+        funding_rate = float(derivatives.get("funding_rate", 0.0) or 0.0)
+        long_short_ratio = float(derivatives.get("long_short_ratio", 0.0) or 0.0)
+        open_interest_change_pct = float(derivatives.get("open_interest_change_pct", 0.0) or 0.0)
+        if funding_rate < -0.00015 and long_short_ratio < 1:
+            bullish_score += 1
+        elif funding_rate > 0.00015 and long_short_ratio > 1.3:
+            bearish_score += 1
+
+        if open_interest_change_pct > 0.03 and abs(order_flow.get("combined_imbalance", 0)) > profile["moderate_imbalance"]:
+            if order_flow.get("combined_imbalance", 0) > 0:
+                bullish_score += 1
+            else:
+                bearish_score += 1
+
         if bullish_score >= bearish_score + 2:
             whale_direction = "多头主导"
             whale_action = "巨鲸吸筹"
@@ -854,7 +909,8 @@ class WhaleAnalysisService:
             f"大单方向：{large_orders.get('direction_label', '未知')}",
             f"订单流状态：{order_flow.get('flow_label', '未知')}，主动买入占比 {order_flow.get('aggressive_buy_ratio', 0)*100:.1f}%",
             f"阶段识别：{phase_data.get('phase_label', '未知')}（置信度 {phase_data.get('confidence', 0)*100:.0f}%）",
-            f"订单不平衡：{order_flow.get('order_imbalance', 0):.3f}，CVD 变化 {order_flow.get('cvd_change', 0):.2f}",
+            f"订单不平衡：{order_flow.get('combined_imbalance', order_flow.get('order_imbalance', 0)):.3f}，CVD 变化 {order_flow.get('cvd_change', 0):.2f}",
+            f"合约数据：资金费率 {funding_rate*100:.4f}%，多空比 {long_short_ratio:.3f}，OI变化 {open_interest_change_pct*100:.2f}%",
         ]
 
         summary = (
@@ -883,10 +939,12 @@ class WhaleAnalysisService:
         whale_data: Dict[str, Any],
         order_flow_data: Dict[str, Any],
         phase_data: Dict[str, Any],
+        derivatives: Dict[str, Any] = None,
         trade_type: str = "realtime"
     ) -> List[Dict[str, Any]]:
         """获取巨鲸预警"""
         profile = self.get_trade_profile(trade_type)
+        derivatives = derivatives or {}
         alerts = []
         
         # 1. 大单异常流入
@@ -948,8 +1006,98 @@ class WhaleAnalysisService:
                 "message": "检测到可能处于出货阶段，注意风险",
                 "suggestion": "考虑分批止盈，保住利润"
             })
+
+        funding_rate = float(derivatives.get("funding_rate", 0.0) or 0.0)
+        long_short_ratio = float(derivatives.get("long_short_ratio", 0.0) or 0.0)
+        oi_change = float(derivatives.get("open_interest_change_pct", 0.0) or 0.0)
+        if funding_rate > 0.00025 and long_short_ratio > 1.4:
+            alerts.append({
+                "type": "overheated_longs",
+                "level": "warning",
+                "title": "🔥 多头拥挤风险",
+                "message": f"资金费率 {funding_rate*100:.4f}% 且多空比 {long_short_ratio:.2f}，存在挤兑回撤风险",
+                "suggestion": f"{profile['label']}建议控制杠杆，避免追高"
+            })
+        elif funding_rate < -0.00025 and long_short_ratio < 0.85:
+            alerts.append({
+                "type": "short_crowded",
+                "level": "info",
+                "title": "🧊 空头拥挤",
+                "message": f"资金费率 {funding_rate*100:.4f}% 且多空比 {long_short_ratio:.2f}，警惕逼空反弹",
+                "suggestion": f"{profile['label']}可关注反弹条件是否成立"
+            })
+
+        if abs(oi_change) > 0.05:
+            alerts.append({
+                "type": "open_interest_surge",
+                "level": "warning" if oi_change > 0 else "info",
+                "title": "📈 持仓量异动",
+                "message": f"Open Interest 近阶段变化 {oi_change*100:.2f}%，市场杠杆参与度明显变化",
+                "suggestion": "结合价格方向确认是真突破还是假突破"
+            })
         
         return alerts
+
+    def build_data_quality_report(
+        self,
+        symbol: str,
+        klines: pd.DataFrame = None,
+        trades: List[Dict[str, Any]] = None,
+        order_book: Dict[str, Any] = None,
+        derivatives: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """输出数据源覆盖与质量评分，便于前端展示可信度。"""
+        derivatives = derivatives or {}
+        kline_ok = klines is not None and not klines.empty and len(klines) >= 60
+        trades_count = len(trades) if trades else 0
+        bids = (order_book or {}).get("bids", []) if order_book else []
+        asks = (order_book or {}).get("asks", []) if order_book else []
+        order_book_depth = min(len(bids), len(asks))
+
+        source_scores = {
+            "kline": 0.35 if kline_ok else 0.0,
+            "agg_trades": 0.25 if trades_count >= 200 else (0.12 if trades_count >= 50 else 0.0),
+            "order_book": 0.20 if order_book_depth >= 20 else (0.08 if order_book_depth >= 5 else 0.0),
+            "derivatives": 0.20 if derivatives.get("open_interest") or derivatives.get("long_short_ratio") else 0.0,
+        }
+        quality_score = float(sum(source_scores.values()))
+
+        if quality_score >= 0.8:
+            quality_level = "high"
+            quality_label = "高可信"
+        elif quality_score >= 0.5:
+            quality_level = "medium"
+            quality_label = "中可信"
+        else:
+            quality_level = "low"
+            quality_label = "低可信"
+
+        return {
+            "symbol": symbol,
+            "quality_score": quality_score,
+            "quality_level": quality_level,
+            "quality_label": quality_label,
+            "sources": {
+                "kline": {
+                    "enabled": bool(kline_ok),
+                    "bars": int(len(klines)) if klines is not None else 0,
+                },
+                "agg_trades": {
+                    "enabled": trades_count > 0,
+                    "count": trades_count,
+                },
+                "order_book": {
+                    "enabled": order_book_depth > 0,
+                    "depth_levels": int(order_book_depth),
+                },
+                "derivatives": {
+                    "enabled": bool(source_scores["derivatives"] > 0),
+                    "open_interest": float(derivatives.get("open_interest", 0.0) or 0.0),
+                    "long_short_ratio": float(derivatives.get("long_short_ratio", 0.0) or 0.0),
+                    "funding_rate": float(derivatives.get("funding_rate", 0.0) or 0.0),
+                },
+            },
+        }
 
 
 # 全局实例

@@ -8,6 +8,7 @@ from app.api import (
     topic_modeling
 )
 from app.core.config import settings
+from app.services.sentiment_scheduler_service import get_sentiment_scheduler_service
 
 app = FastAPI(
     title="Crypto Analysis System API",
@@ -42,6 +43,18 @@ app.include_router(complete_ta.router)
 app.include_router(enhanced_backtest.router)
 app.include_router(comprehensive_sentiment.router)
 app.include_router(topic_modeling.router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler = get_sentiment_scheduler_service()
+    await scheduler.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler = get_sentiment_scheduler_service()
+    await scheduler.stop()
 
 @app.get("/")
 async def root():

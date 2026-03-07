@@ -81,6 +81,60 @@
       </div>
     </div>
 
+    <!-- 数据可信度 -->
+    <div class="card" v-if="whaleAnalysis?.data_quality">
+      <h3>🛡️ 数据可信度</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>可信度评分</span>
+          <strong>{{ ((whaleAnalysis.data_quality.quality_score || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>可信等级</span>
+          <strong>{{ whaleAnalysis.data_quality.quality_label }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>成交样本</span>
+          <strong>{{ whaleAnalysis.data_quality.sources?.agg_trades?.count || 0 }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>盘口深度档位</span>
+          <strong>{{ whaleAnalysis.data_quality.sources?.order_book?.depth_levels || 0 }}</strong>
+        </div>
+      </div>
+      <div class="signal-points">
+        <div class="signal-point">K线: {{ whaleAnalysis.data_quality.sources?.kline?.bars || 0 }} 根</div>
+        <div class="signal-point">聚合成交: {{ whaleAnalysis.data_quality.sources?.agg_trades?.enabled ? '已接入' : '未接入' }}</div>
+        <div class="signal-point">订单簿: {{ whaleAnalysis.data_quality.sources?.order_book?.enabled ? '已接入' : '未接入' }}</div>
+        <div class="signal-point">合约指标: {{ whaleAnalysis.data_quality.sources?.derivatives?.enabled ? '已接入' : '未接入' }}</div>
+      </div>
+    </div>
+
+    <!-- 合约指标 -->
+    <div class="card" v-if="whaleAnalysis?.derivatives">
+      <h3>📐 合约偏离指标</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>资金费率</span>
+          <strong>{{ ((whaleAnalysis.derivatives.funding_rate || 0) * 100).toFixed(4) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>全市场多空比</span>
+          <strong>{{ (whaleAnalysis.derivatives.long_short_ratio || 0).toFixed(3) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>Open Interest</span>
+          <strong>{{ formatToMillions(whaleAnalysis.derivatives.open_interest) }}M</strong>
+        </div>
+        <div class="smart-item">
+          <span>OI变化</span>
+          <strong :class="(whaleAnalysis.derivatives.open_interest_change_pct || 0) >= 0 ? 'positive' : 'negative'">
+            {{ ((whaleAnalysis.derivatives.open_interest_change_pct || 0) * 100).toFixed(2) }}%
+          </strong>
+        </div>
+      </div>
+    </div>
+
     <!-- 聪明钱分布 -->
     <div class="card" v-if="smartMoney">
       <h3>🐋 聪明钱分布</h3>
@@ -317,6 +371,11 @@ const tradeTypeLabel = computed(() => {
 
 const formatTime = (ts: number) => {
   return new Date(ts).toLocaleString('zh-CN')
+}
+
+const formatToMillions = (value: number) => {
+  if (!value) return '0.00'
+  return (value / 1_000_000).toFixed(2)
 }
 
 const riskClass = (risk: string) => {
