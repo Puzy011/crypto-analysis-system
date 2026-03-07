@@ -12,71 +12,72 @@
         <el-menu
           :default-active="$route.path"
           mode="horizontal"
-          :ellipsis="true"
+          :ellipsis="false"
           router
         >
-          <el-menu-item index="/">首页</el-menu-item>
-          <el-menu-item index="/market">市场行情</el-menu-item>
-          <el-menu-item index="/watchlist">
-            <el-icon><Star /></el-icon>
-            <span>自选币</span>
+          <el-menu-item index="/">
+            <el-icon><HomeFilled /></el-icon>
+            <span>首页</span>
           </el-menu-item>
-          <el-menu-item index="/alert">
-            <el-icon><Bell /></el-icon>
-            <span>价格预警</span>
+          
+          <el-menu-item index="/market">
+            <el-icon><TrendCharts /></el-icon>
+            <span>市场行情</span>
           </el-menu-item>
-          <el-menu-item index="/prediction">
-            <el-icon><MagicStick /></el-icon>
-            <span>AI预测</span>
-          </el-menu-item>
-          <el-menu-item index="/whale">
-            <el-icon><View /></el-icon>
-            <span>庄家分析</span>
-          </el-menu-item>
-          <el-menu-item index="/sentiment">
-            <el-icon><ChatLineSquare /></el-icon>
-            <span>舆情分析</span>
-          </el-menu-item>
-          <el-sub-menu title="高级功能">
-            <el-menu-item index="/advanced-prediction">
+          
+          <el-sub-menu index="prediction-menu">
+            <template #title>
               <el-icon><MagicStick /></el-icon>
-              <span>高级预测模型</span>
-            </el-menu-item>
-            <el-menu-item index="/enhanced-sentiment">
-              <el-icon><ChatLineSquare /></el-icon>
-              <span>增强舆情分析</span>
-            </el-menu-item>
-            <el-menu-item index="/whale-analysis">
+              <span>AI预测</span>
+            </template>
+            <el-menu-item index="/prediction">基础预测</el-menu-item>
+            <el-menu-item index="/advanced-prediction">高级预测模型</el-menu-item>
+            <el-menu-item index="/realtime-prediction">实时预测更新</el-menu-item>
+          </el-sub-menu>
+          
+          <el-sub-menu index="whale-menu">
+            <template #title>
               <el-icon><View /></el-icon>
-              <span>巨鲸分析</span>
-            </el-menu-item>
-            <el-menu-item index="/realtime-sentiment">
-              <el-icon><DataLine /></el-icon>
-              <span>实时舆情监控</span>
-            </el-menu-item>
-            <el-menu-item index="/prediction-backtest">
-              <el-icon><TrendCharts /></el-icon>
-              <span>预测回测验证</span>
-            </el-menu-item>
-            <el-menu-item index="/realtime-prediction">
-              <el-icon><Refresh /></el-icon>
-              <span>实时预测更新</span>
-            </el-menu-item>
-            <el-menu-item index="/complete-ta">
-              <el-icon><TrendCharts /></el-icon>
-              <span>完整技术指标</span>
-            </el-menu-item>
-            <el-menu-item index="/enhanced-backtest">
-              <el-icon><DataLine /></el-icon>
-              <span>增强回测系统</span>
-            </el-menu-item>
-            <el-menu-item index="/comprehensive-sentiment">
+              <span>庄家分析</span>
+            </template>
+            <el-menu-item index="/whale">基础庄家分析</el-menu-item>
+            <el-menu-item index="/whale-analysis">巨鲸分析</el-menu-item>
+          </el-sub-menu>
+          
+          <el-sub-menu index="sentiment-menu">
+            <template #title>
               <el-icon><ChatLineSquare /></el-icon>
-              <span>综合舆情分析</span>
+              <span>舆情分析</span>
+            </template>
+            <el-menu-item index="/sentiment">基础舆情</el-menu-item>
+            <el-menu-item index="/enhanced-sentiment">增强舆情分析</el-menu-item>
+            <el-menu-item index="/comprehensive-sentiment">综合舆情分析</el-menu-item>
+            <el-menu-item index="/realtime-sentiment">实时舆情监控</el-menu-item>
+            <el-menu-item index="/topic-modeling">主题建模</el-menu-item>
+          </el-sub-menu>
+          
+          <el-sub-menu index="analysis-menu">
+            <template #title>
+              <el-icon><DataLine /></el-icon>
+              <span>技术分析</span>
+            </template>
+            <el-menu-item index="/complete-ta">完整技术指标</el-menu-item>
+            <el-menu-item index="/prediction-backtest">预测回测验证</el-menu-item>
+            <el-menu-item index="/enhanced-backtest">增强回测系统</el-menu-item>
+          </el-sub-menu>
+          
+          <el-sub-menu index="tools-menu">
+            <template #title>
+              <el-icon><Grid /></el-icon>
+              <span>工具</span>
+            </template>
+            <el-menu-item index="/watchlist">
+              <el-icon><Star /></el-icon>
+              <span>自选币</span>
             </el-menu-item>
-            <el-menu-item index="/topic-modeling">
-              <el-icon><MagicStick /></el-icon>
-              <span>主题建模</span>
+            <el-menu-item index="/alert">
+              <el-icon><Bell /></el-icon>
+              <span>价格预警</span>
             </el-menu-item>
           </el-sub-menu>
         </el-menu>
@@ -93,28 +94,48 @@
     
     <!-- 底部导航（移动端） -->
     <el-footer class="app-footer mobile-only">
-      <el-tab-bar v-model="activeTab" @change="handleTabChange">
-        <el-tab-bar-item name="/">
+      <div class="mobile-nav">
+        <div 
+          class="nav-item" 
+          :class="{ active: activeTab === '/' }"
+          @click="handleTabChange('/')"
+        >
           <el-icon><HomeFilled /></el-icon>
           <span>首页</span>
-        </el-tab-bar-item>
-        <el-tab-bar-item name="/market">
+        </div>
+        <div 
+          class="nav-item" 
+          :class="{ active: activeTab === '/market' }"
+          @click="handleTabChange('/market')"
+        >
           <el-icon><TrendCharts /></el-icon>
           <span>行情</span>
-        </el-tab-bar-item>
-        <el-tab-bar-item name="/watchlist">
+        </div>
+        <div 
+          class="nav-item" 
+          :class="{ active: activeTab === '/watchlist' }"
+          @click="handleTabChange('/watchlist')"
+        >
           <el-icon><Star /></el-icon>
           <span>自选</span>
-        </el-tab-bar-item>
-        <el-tab-bar-item name="/prediction">
+        </div>
+        <div 
+          class="nav-item" 
+          :class="{ active: activeTab === '/prediction' }"
+          @click="handleTabChange('/prediction')"
+        >
           <el-icon><MagicStick /></el-icon>
           <span>预测</span>
-        </el-tab-bar-item>
-        <el-tab-bar-item name="/more">
+        </div>
+        <div 
+          class="nav-item" 
+          :class="{ active: activeTab === '/more' }"
+          @click="handleTabChange('/more')"
+        >
           <el-icon><Grid /></el-icon>
           <span>更多</span>
-        </el-tab-bar-item>
-      </el-tab-bar>
+        </div>
+      </div>
     </el-footer>
     
     <!-- 更多功能弹窗（移动端） -->
@@ -130,58 +151,80 @@
           :default-active="$route.path"
           @select="handleMoreMenuSelect"
         >
-          <el-menu-item index="/alert">
-            <el-icon><Bell /></el-icon>
-            <span>价格预警</span>
-          </el-menu-item>
-          <el-menu-item index="/whale">
-            <el-icon><View /></el-icon>
-            <span>庄家分析</span>
-          </el-menu-item>
-          <el-menu-item index="/sentiment">
-            <el-icon><ChatLineSquare /></el-icon>
-            <span>舆情分析</span>
-          </el-menu-item>
-          <el-menu-item index="/advanced-prediction">
-            <el-icon><MagicStick /></el-icon>
-            <span>高级预测模型</span>
-          </el-menu-item>
-          <el-menu-item index="/enhanced-sentiment">
-            <el-icon><ChatLineSquare /></el-icon>
-            <span>增强舆情分析</span>
-          </el-menu-item>
-          <el-menu-item index="/whale-analysis">
-            <el-icon><View /></el-icon>
-            <span>巨鲸分析</span>
-          </el-menu-item>
-          <el-menu-item index="/realtime-sentiment">
-            <el-icon><DataLine /></el-icon>
-            <span>实时舆情监控</span>
-          </el-menu-item>
-          <el-menu-item index="/prediction-backtest">
-            <el-icon><TrendCharts /></el-icon>
-            <span>预测回测验证</span>
-          </el-menu-item>
-          <el-menu-item index="/realtime-prediction">
-            <el-icon><Refresh /></el-icon>
-            <span>实时预测更新</span>
-          </el-menu-item>
-          <el-menu-item index="/complete-ta">
-            <el-icon><TrendCharts /></el-icon>
-            <span>完整技术指标</span>
-          </el-menu-item>
-          <el-menu-item index="/enhanced-backtest">
-            <el-icon><DataLine /></el-icon>
-            <span>增强回测系统</span>
-          </el-menu-item>
-          <el-menu-item index="/comprehensive-sentiment">
-            <el-icon><ChatLineSquare /></el-icon>
-            <span>综合舆情分析</span>
-          </el-menu-item>
-          <el-menu-item index="/topic-modeling">
-            <el-icon><MagicStick /></el-icon>
-            <span>主题建模</span>
-          </el-menu-item>
+          <el-menu-item-group title="AI预测">
+            <el-menu-item index="/prediction">
+              <el-icon><MagicStick /></el-icon>
+              <span>基础预测</span>
+            </el-menu-item>
+            <el-menu-item index="/advanced-prediction">
+              <el-icon><MagicStick /></el-icon>
+              <span>高级预测模型</span>
+            </el-menu-item>
+            <el-menu-item index="/realtime-prediction">
+              <el-icon><Refresh /></el-icon>
+              <span>实时预测更新</span>
+            </el-menu-item>
+          </el-menu-item-group>
+          
+          <el-menu-item-group title="庄家分析">
+            <el-menu-item index="/whale">
+              <el-icon><View /></el-icon>
+              <span>基础庄家分析</span>
+            </el-menu-item>
+            <el-menu-item index="/whale-analysis">
+              <el-icon><View /></el-icon>
+              <span>巨鲸分析</span>
+            </el-menu-item>
+          </el-menu-item-group>
+          
+          <el-menu-item-group title="舆情分析">
+            <el-menu-item index="/sentiment">
+              <el-icon><ChatLineSquare /></el-icon>
+              <span>基础舆情</span>
+            </el-menu-item>
+            <el-menu-item index="/enhanced-sentiment">
+              <el-icon><ChatLineSquare /></el-icon>
+              <span>增强舆情分析</span>
+            </el-menu-item>
+            <el-menu-item index="/comprehensive-sentiment">
+              <el-icon><ChatLineSquare /></el-icon>
+              <span>综合舆情分析</span>
+            </el-menu-item>
+            <el-menu-item index="/realtime-sentiment">
+              <el-icon><DataLine /></el-icon>
+              <span>实时舆情监控</span>
+            </el-menu-item>
+            <el-menu-item index="/topic-modeling">
+              <el-icon><MagicStick /></el-icon>
+              <span>主题建模</span>
+            </el-menu-item>
+          </el-menu-item-group>
+          
+          <el-menu-item-group title="技术分析">
+            <el-menu-item index="/complete-ta">
+              <el-icon><TrendCharts /></el-icon>
+              <span>完整技术指标</span>
+            </el-menu-item>
+            <el-menu-item index="/prediction-backtest">
+              <el-icon><TrendCharts /></el-icon>
+              <span>预测回测验证</span>
+            </el-menu-item>
+            <el-menu-item index="/enhanced-backtest">
+              <el-icon><DataLine /></el-icon>
+              <span>增强回测系统</span>
+            </el-menu-item>
+          </el-menu-item-group>
+          
+          <el-menu-item-group title="工具">
+            <el-menu-item index="/watchlist">
+              <el-icon><Star /></el-icon>
+              <span>自选币</span>
+            </el-menu-item>
+            <el-menu-item index="/alert">
+              <el-icon><Bell /></el-icon>
+              <span>价格预警</span>
+            </el-menu-item>
+          </el-menu-item-group>
         </el-menu>
       </div>
     </el-drawer>
@@ -259,10 +302,30 @@ const handleMoreMenuSelect = (index: string) => {
   flex: 1;
   display: flex;
   justify-content: center;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .header-center :deep(.el-menu) {
   border-bottom: none;
+  flex: 1;
+}
+
+.header-center :deep(.el-menu-item),
+.header-center :deep(.el-sub-menu__title) {
+  padding: 0 15px;
+}
+
+.header-center :deep(.el-menu-item .el-icon),
+.header-center :deep(.el-sub-menu__title .el-icon) {
+  margin-right: 5px;
+}
+
+.header-right {
+  min-width: 100px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .app-main {
@@ -279,23 +342,39 @@ const handleMoreMenuSelect = (index: string) => {
   height: 60px;
 }
 
-.app-footer :deep(.el-tab-bar) {
+.mobile-nav {
+  display: flex;
   height: 100%;
-  border: none;
+  align-items: center;
+  justify-content: space-around;
 }
 
-.app-footer :deep(.el-tab-bar-item) {
+.nav-item {
+  flex: 1;
+  display: flex;
   flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   height: 100%;
-  padding: 6px 0;
+  cursor: pointer;
+  transition: all 0.3s;
+  color: #909399;
 }
 
-.app-footer :deep(.el-tab-bar-item .el-icon) {
+.nav-item:active {
+  background-color: #f5f7fa;
+}
+
+.nav-item.active {
+  color: #409EFF;
+}
+
+.nav-item .el-icon {
   font-size: 22px;
 }
 
-.app-footer :deep(.el-tab-bar-item span) {
+.nav-item span {
   font-size: 12px;
 }
 
@@ -313,6 +392,13 @@ const handleMoreMenuSelect = (index: string) => {
 
 .more-menu :deep(.el-menu) {
   border: none;
+}
+
+.more-menu :deep(.el-menu-item-group__title) {
+  padding: 12px 20px 8px;
+  font-size: 13px;
+  color: #909399;
+  font-weight: 600;
 }
 
 /* 响应式样式 */
