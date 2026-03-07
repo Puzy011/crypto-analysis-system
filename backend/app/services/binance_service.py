@@ -47,6 +47,79 @@ class BinanceService:
         except Exception as e:
             print(f"Binance API 访问失败，使用模拟数据: {e}")
             return MockBinanceService.get_tickers(symbols)
+
+    async def get_trading_symbols(
+        self,
+        quote_asset: str = "USDT",
+        limit: int = 200,
+        include_leveraged: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取可交易交易对列表（默认 USDT 计价），并按 24h quoteVolume 排序
+        """
+        normalized_quote = (quote_asset or "USDT").upper()
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 1) 交易对元信息
+                exchange_url = f"{self.BASE_URL}/api/v3/exchangeInfo"
+                async with session.get(exchange_url, timeout=8) as response:
+                    if response.status != 200:
+                        raise Exception(f"Binance API error: {response.status}")
+                    exchange_info = await response.json()
+
+                raw_symbols = exchange_info.get("symbols", []) or []
+                candidates: List[Dict[str, Any]] = []
+                for row in raw_symbols:
+                    symbol = str(row.get("symbol", "")).upper()
+                    base_asset = str(row.get("baseAsset", "")).upper()
+                    q_asset = str(row.get("quoteAsset", "")).upper()
+                    status = str(row.get("status", "")).upper()
+                    is_spot = bool(row.get("isSpotTradingAllowed", False))
+                    if not symbol or q_asset != normalized_quote:
+                        continue
+                    if status != "TRADING" or not is_spot:
+                        continue
+                    if not include_leveraged and self._is_leveraged_token(base_asset):
+                        continue
+                    candidates.append(
+                        {
+                            "symbol": symbol,
+                            "baseAsset": base_asset,
+                            "quoteAsset": q_asset,
+                            "status": status,
+                        }
+                    )
+
+                if not candidates:
+                    return []
+
+                # 2) 成交额排序
+                ticker_url = f"{self.BASE_URL}/api/v3/ticker/24hr"
+                async with session.get(ticker_url, timeout=8) as response:
+                    if response.status != 200:
+                        raise Exception(f"Binance API error: {response.status}")
+                    all_tickers = await response.json()
+
+                volume_map: Dict[str, float] = {}
+                for t in all_tickers:
+                    sym = str(t.get("symbol", "")).upper()
+                    try:
+                        volume_map[sym] = float(t.get("quoteVolume", 0) or 0)
+                    except Exception:
+                        volume_map[sym] = 0.0
+
+                for item in candidates:
+                    item["quoteVolume"] = float(volume_map.get(item["symbol"], 0.0))
+
+                candidates.sort(key=lambda x: float(x.get("quoteVolume", 0.0)), reverse=True)
+                return candidates[: max(1, min(int(limit), 500))]
+        except Exception as e:
+            print(f"Binance symbols 访问失败，使用模拟数据: {e}")
+            return MockBinanceService.get_trading_symbols(
+                quote_asset=normalized_quote,
+                limit=limit,
+                include_leveraged=include_leveraged,
+            )
     
     async def get_klines(
         self, 
@@ -289,3 +362,8 @@ class BinanceService:
             "bids": bids,
             "asks": asks,
         }
+
+    def _is_leveraged_token(self, base_asset: str) -> bool:
+        """过滤杠杆代币（UP/DOWN/BULL/BEAR）"""
+        upper = (base_asset or "").upper()
+        return upper.endswith("UP") or upper.endswith("DOWN") or upper.endswith("BULL") or upper.endswith("BEAR")

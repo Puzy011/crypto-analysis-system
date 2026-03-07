@@ -1,138 +1,145 @@
-<# 虚拟货币行情分析系统 - MVP 版本
+# Crypto Analysis System
 
-## 🚀 项目简介
+加密货币分析系统（前后端分离）：
+- 市场行情与 K 线
+- AI 预测与回测
+- 巨鲸/庄家行为分析
+- 综合舆情分析（多平台定时采集 + 时间趋势分析）
 
-这是一个以 **AI 预测未来走势** 和 **庄家操作分析** 为核心的虚拟货币行情分析系统。
+项目路径：`D:\Dev\crypto-analysis-system`
 
-当前为 **MVP 版本**，包含：
-- ✅ Binance 实时行情获取
-- ✅ K线图展示（Lightweight Charts）
-- ✅ 多币种行情列表
-- 🔄 AI 预测（开发中）
-- 🔄 庄家分析（开发中）
+## 1. 环境要求
 
----
+- Windows 10/11（当前文档按 PowerShell 编写）
+- Python `3.10` 或 `3.11`（推荐 `3.11`）
+- Node.js `>= 18`（推荐 LTS）
+- npm `>= 9`
+- Git
 
-## 📁 项目结构
+说明：
+- 后端依赖包含 `prophet`、`xgboost`、`lightgbm`，建议使用 Python 3.10/3.11 以减少安装兼容问题。
+- 不配置 Binance API Key 也可运行大部分功能（使用公开接口或降级数据）。
 
-```
-crypto-analysis-system/
-├── backend/                    # 后端
-│   ├── app/
-│   │   ├── api/            # API 路由
-│   │   │   └── market.py
-│   │   ├── core/           # 核心配置
-│   │   │   └── config.py
-│   │   ├── services/       # 业务逻辑
-│   │   │   └── binance_service.py
-│   │   └── main.py         # FastAPI 入口
-│   └── requirements.txt     # Python 依赖
-│
-├── frontend/                   # 前端
-│   ├── src/
-│   │   ├── views/          # 页面
-│   │   │   ├── Home.vue
-│   │   │   └── Market.vue
-│   │   ├── router/         # 路由
-│   │   │   └── index.ts
-│   │   ├── App.vue
-│   │   └── main.ts
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── scripts/                    # 脚本
-├── REQUIREMENTS_V2.md        # 需求文档（重点）
-├── TECH_ARCHITECTURE.md      # 技术架构
-├── GITHUB_REFERENCES.md      # GitHub 参考项目
-└── README.md                # 本文件
-```
+## 2. 后端运行（FastAPI）
 
----
+### 2.1 创建并激活虚拟环境
 
-## 🛠️ 快速开始
-
-### 1. 后端启动
-
-```bash
-cd backend
-
-# 创建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或 .\venv\Scripts\activate  # Windows
-
-# 安装依赖
+```powershell
+cd D:\Dev\crypto-analysis-system\backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# 启动后端
-python -m app.main
 ```
 
-后端服务将在 http://localhost:8000 启动
+### 2.2 环境变量（可选但建议）
 
-API 文档：http://localhost:8000/docs
+在 `backend` 目录创建 `.env` 文件：
 
----
+```env
+APP_NAME=Crypto Analysis System
+APP_VERSION=2.0.0
+DEBUG=true
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+DATABASE_URL=
+```
 
-### 2. 前端启动
+### 2.3 启动后端
 
-```bash
-cd frontend
+```powershell
+cd D:\Dev\crypto-analysis-system\backend
+.\.venv\Scripts\Activate.ps1
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-# 安装依赖
+启动后地址：
+- API 根：`http://localhost:8000/`
+- 健康检查：`http://localhost:8000/api/health`
+- Swagger：`http://localhost:8000/docs`
+
+说明：
+- 应用启动时会自动启动舆情调度器（多平台定时采集）。
+- 运行时快照默认写入：`backend/data/sentiment_scheduler/multi_platform_snapshots.jsonl`
+
+## 3. 前端运行（Vue 3 + Vite）
+
+```powershell
+cd D:\Dev\crypto-analysis-system\frontend
 npm install
-
-# 启动开发服务器
 npm run dev
 ```
 
-前端服务将在 http://localhost:3000 启动
+启动后地址：
+- 前端：`http://localhost:3000`
 
----
+说明：
+- 前端已在 `vite.config.ts` 配置代理：`/api -> http://localhost:8000`
+- 先启动后端，再启动前端，可直接联调。
 
-## 📊 MVP 功能说明
+## 4. 构建与发布检查
 
-### 首页
-- 系统介绍
-- 后端健康检查
-- 快速导航到市场行情
+### 4.1 后端语法编译检查
 
-### 市场行情页
-- 多币种实时行情列表（BTC、ETH、BNB、SOL、XRP）
-- K线图展示（支持多种时间周期）
-- 点击币种切换查看
+```powershell
+cd D:\Dev\crypto-analysis-system
+python -m compileall backend/app
+```
 
----
+### 4.2 前端生产构建
 
-## 🎯 后续开发计划
+```powershell
+cd D:\Dev\crypto-analysis-system\frontend
+npm run build
+```
 
-### 第二阶段
-- [ ] 技术指标计算（MA、MACD、RSI 等）
-- [ ] 基础价格预测（ML 模型）
-- [ ] 大单分析
-- [ ] 价格预警
+### 4.3 前端预览构建产物
 
-### 第三阶段
-- [ ] LSTM/Transformer 深度学习预测
-- [ ] 完整庄家操作识别（吸-洗-拉-出）
-- [ ] 资金流向分析
-- [ ] 新闻舆情分析
+```powershell
+cd D:\Dev\crypto-analysis-system\frontend
+npm run preview
+```
 
----
+## 5. 常见问题
 
-## 📚 参考文档
+### 5.1 `git pull` 报 443 连接失败
 
-- [需求文档 V2.0](./REQUIREMENTS_V2.md) - 完整需求设计
-- [技术架构](./TECH_ARCHITECTURE.md) - 技术方案详解
-- [GitHub 参考项目](./GITHUB_REFERENCES.md) - 25+ 开源项目推荐
+如果你本机有本地代理（例如 `127.0.0.1:7890`），可给当前仓库配置：
 
----
+```powershell
+cd D:\Dev\crypto-analysis-system
+git config --local http.proxy http://127.0.0.1:7890
+git config --local https.proxy http://127.0.0.1:7890
+git pull --tags origin main
+```
 
-## ⚠️ 免责声明
+取消代理：
 
-本系统仅供学习和研究使用，不构成任何投资建议。加密货币市场风险极高，投资需谨慎。
+```powershell
+git config --local --unset http.proxy
+git config --local --unset https.proxy
+```
 
----
+### 5.2 PowerShell 不允许执行激活脚本
 
-*项目版本: MVP 1.0*
-*创建日期: 2026-03-04*
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+### 5.3 `ModuleNotFoundError: app`
+
+请在 `backend` 目录下启动 `uvicorn app.main:app ...`，不要在其他目录直接运行。
+
+### 5.4 NLP 语料缺失（少数环境）
+
+如遇 `textblob/nltk` 语料报错：
+
+```powershell
+cd D:\Dev\crypto-analysis-system\backend
+.\.venv\Scripts\Activate.ps1
+python -m textblob.download_corpora
+```
+
+## 6. 免责声明
+
+本项目仅用于学习与研究，不构成任何投资建议。加密货币市场风险高，请独立判断并自行承担风险。

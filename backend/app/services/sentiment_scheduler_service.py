@@ -43,7 +43,16 @@ class SentimentSchedulerService:
         data_dir: Optional[str] = None,
     ) -> None:
         self.interval_seconds = max(120, int(interval_seconds))
-        self.symbols = [s.upper() for s in (symbols or ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"])]
+        self.symbols = [
+            s.upper()
+            for s in (
+                symbols
+                or [
+                    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+                    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+                ]
+            )
+        ]
         self.max_snapshots_per_symbol = max(100, int(max_snapshots_per_symbol))
 
         self.comprehensive_service: ComprehensiveSentimentService = (

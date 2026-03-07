@@ -5,6 +5,15 @@ from datetime import datetime, timedelta
 
 class MockBinanceService:
     """模拟币安 API 服务（备用方案）"""
+
+    POPULAR_USDT_SYMBOLS = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+        "LTCUSDT", "BCHUSDT", "TRXUSDT", "ATOMUSDT", "MATICUSDT",
+        "UNIUSDT", "ETCUSDT", "NEARUSDT", "AAVEUSDT", "FILUSDT",
+        "APTUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT", "INJUSDT",
+        "PEPEUSDT", "SHIBUSDT", "TIAUSDT", "SEIUSDT", "TONUSDT",
+    ]
     
     @staticmethod
     def get_ticker(symbol: str) -> Dict[str, Any]:
@@ -34,6 +43,34 @@ class MockBinanceService:
     def get_tickers(symbols: List[str]) -> List[Dict[str, Any]]:
         """获取多个交易对的实时行情（模拟数据）"""
         return [MockBinanceService.get_ticker(symbol) for symbol in symbols]
+
+    @staticmethod
+    def get_trading_symbols(
+        quote_asset: str = "USDT",
+        limit: int = 200,
+        include_leveraged: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """获取可交易交易对（模拟数据）"""
+        normalized_quote = (quote_asset or "USDT").upper()
+        if normalized_quote != "USDT":
+            return []
+
+        symbols = MockBinanceService.POPULAR_USDT_SYMBOLS[: max(1, min(int(limit), len(MockBinanceService.POPULAR_USDT_SYMBOLS)))]
+        result: List[Dict[str, Any]] = []
+        for idx, symbol in enumerate(symbols):
+            base_asset = symbol.replace("USDT", "")
+            # 模拟成交额：按序递减
+            quote_volume = float((len(symbols) - idx) * 1_000_000)
+            result.append(
+                {
+                    "symbol": symbol,
+                    "baseAsset": base_asset,
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "quoteVolume": quote_volume,
+                }
+            )
+        return result
     
     @staticmethod
     def get_klines(
@@ -116,7 +153,28 @@ class MockBinanceService:
             "DOGEUSDT": 0.15,
             "ADAUSDT": 0.45,
             "AVAXUSDT": 35.0,
-            "DOTUSDT": 7.0
+            "DOTUSDT": 7.0,
+            "LINKUSDT": 18.0,
+            "LTCUSDT": 95.0,
+            "BCHUSDT": 420.0,
+            "TRXUSDT": 0.13,
+            "ATOMUSDT": 11.5,
+            "MATICUSDT": 0.9,
+            "UNIUSDT": 11.0,
+            "ETCUSDT": 29.0,
+            "NEARUSDT": 5.5,
+            "AAVEUSDT": 120.0,
+            "FILUSDT": 7.5,
+            "APTUSDT": 11.0,
+            "ARBUSDT": 1.8,
+            "OPUSDT": 3.2,
+            "SUIUSDT": 2.0,
+            "INJUSDT": 40.0,
+            "PEPEUSDT": 0.00001,
+            "SHIBUSDT": 0.00002,
+            "TIAUSDT": 14.0,
+            "SEIUSDT": 0.8,
+            "TONUSDT": 6.2,
         }
         
         return price_map.get(symbol, 100.0)
