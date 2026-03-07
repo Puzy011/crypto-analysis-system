@@ -5,6 +5,29 @@
       <p>FinBERT 风格金融情感分析 + 新闻-价格关联</p>
     </div>
 
+    <div class="card control-card">
+      <div class="controls">
+        <div class="control-item">
+          <span class="control-label">交易对</span>
+          <select v-model="selectedSymbol" class="input-select">
+            <option value="BTCUSDT">BTC/USDT</option>
+            <option value="ETHUSDT">ETH/USDT</option>
+            <option value="BNBUSDT">BNB/USDT</option>
+            <option value="SOLUSDT">SOL/USDT</option>
+          </select>
+        </div>
+        <div class="control-item">
+          <span class="control-label">预测窗口</span>
+          <select v-model="forecastHours" class="input-select">
+            <option :value="6">6小时</option>
+            <option :value="12">12小时</option>
+            <option :value="24">24小时</option>
+            <option :value="48">48小时</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- 快速刷新 -->
     <div class="refresh-section">
       <button @click="refreshAll" class="btn btn-primary" :disabled="isLoading">
@@ -36,6 +59,78 @@
         <div class="summary-item">
           <span class="summary-label">分析新闻数</span>
           <span class="summary-value">{{ fullAnalysis.news_count }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 趋势预测 -->
+    <div class="card" v-if="fullAnalysis?.trend_forecast">
+      <h3>📈 舆情趋势预测</h3>
+      <div class="sentiment-index-summary">
+        <div class="summary-item">
+          <span class="summary-label">预测方向</span>
+          <span class="summary-value" :class="getTrendClass(fullAnalysis.trend_forecast.direction)">
+            {{ fullAnalysis.trend_forecast.direction_label }}
+          </span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">预测分值</span>
+          <span class="summary-value" :class="fullAnalysis.trend_forecast.forecast_score >= 0 ? 'positive' : 'negative'">
+            {{ fullAnalysis.trend_forecast.forecast_score?.toFixed(3) }}
+          </span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">预期恐惧贪婪</span>
+          <span class="summary-value">
+            {{ fullAnalysis.trend_forecast.expected_fear_greed_index?.toFixed(1) }}
+          </span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">预测置信度</span>
+          <span class="summary-value">
+            {{ (fullAnalysis.trend_forecast.confidence * 100).toFixed(1) }}%
+          </span>
+        </div>
+      </div>
+      <div class="news-keywords" v-if="fullAnalysis.trend_forecast.drivers?.length">
+        <span class="keywords-label">驱动因子:</span>
+        <span
+          v-for="(driver, idx) in fullAnalysis.trend_forecast.drivers"
+          :key="idx"
+          class="news-keyword"
+        >
+          {{ driver }}
+        </span>
+      </div>
+    </div>
+
+    <!-- 数据质量与事件分布 -->
+    <div class="card" v-if="fullAnalysis?.sentiment_index">
+      <h3>🧩 数据质量</h3>
+      <div class="sentiment-index-summary">
+        <div class="summary-item">
+          <span class="summary-label">来源多样性</span>
+          <span class="summary-value">
+            {{ ((fullAnalysis.sentiment_index.source_diversity_score || 0) * 100).toFixed(0) }}%
+          </span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">24h 动量</span>
+          <span class="summary-value" :class="fullAnalysis.sentiment_index.momentum_24h >= 0 ? 'positive' : 'negative'">
+            {{ (fullAnalysis.sentiment_index.momentum_24h || 0).toFixed(3) }}
+          </span>
+        </div>
+      </div>
+      <div class="news-keywords" v-if="fullAnalysis.sentiment_index.hot_topics?.length">
+        <span class="keywords-label">热词:</span>
+        <span v-for="(kw, idx) in fullAnalysis.sentiment_index.hot_topics" :key="idx" class="news-keyword">
+          {{ kw }}
+        </span>
+      </div>
+      <div class="entities" v-if="fullAnalysis.sentiment_index.event_distribution">
+        <div v-for="(count, evt) in fullAnalysis.sentiment_index.event_distribution" :key="evt" class="entity-group">
+          <span class="entity-type">{{ evt }}</span>
+          <span class="entity-value">{{ count }}</span>
         </div>
       </div>
     </div>
@@ -125,7 +220,7 @@
                 :key="entityType"
                 class="entity-group"
               >
-                <span class="entity-type">{{ getEntityTypeName(entityType) }}:</span>
+                <span class="entity-type">{{ getEntityTypeName(String(entityType)) }}:</span>
                 <span v-for="(entity, idx) in entityList" :key="idx" class="entity-value">
                   {{ entity }}
                 </span>
@@ -139,10 +234,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 
 const isLoading = ref(false)
 const fullAnalysis = ref<any>(null)
+const selectedSymbol = ref('BTCUSDT')
+const forecastHours = ref(24)
 
 const apiBase = '/api'
 
@@ -179,10 +276,18 @@ const getEntityTypeName = (type: string) => {
   return names[type] || type
 }
 
+const getTrendClass = (direction: string) => {
+  if (direction === 'up') return 'positive'
+  if (direction === 'down') return 'negative'
+  return 'neutral'
+}
+
 const refreshAll = async () => {
   isLoading.value = true
   try {
-    const response = await fetch(`${apiBase}/comprehensive-sentiment/full-analysis/BTCUSDT`)
+    const response = await fetch(
+      `${apiBase}/comprehensive-sentiment/full-analysis/${selectedSymbol.value}?forecast_hours=${forecastHours.value}`
+    )
     fullAnalysis.value = await response.json()
   } catch (error) {
     console.error('获取综合舆情失败:', error)
@@ -192,6 +297,10 @@ const refreshAll = async () => {
 }
 
 onMounted(() => {
+  refreshAll()
+})
+
+watch([selectedSymbol, forecastHours], () => {
   refreshAll()
 })
 </script>
@@ -241,6 +350,37 @@ onMounted(() => {
   font-size: 15px;
 }
 
+.control-card {
+  background: #f8f9ff;
+}
+
+.controls {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.control-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.input-select {
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  min-width: 150px;
+}
+
 .sentiment-index-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -283,6 +423,10 @@ onMounted(() => {
 .summary-value.extreme_greed,
 .summary-value.greed {
   color: #10b981;
+}
+
+.summary-value.neutral {
+  color: #6b7280;
 }
 
 .keywords-section {

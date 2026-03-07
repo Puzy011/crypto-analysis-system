@@ -14,9 +14,9 @@
           :key="key"
           class="indicator-card"
         >
-          <span class="indicator-name">{{ formatIndicatorName(key) }}</span>
-          <span class="indicator-value" :class="getValueClass(key, value)">
-            {{ formatIndicatorValue(key, value) }}
+          <span class="indicator-name">{{ formatIndicatorName(String(key)) }}</span>
+          <span class="indicator-value" :class="getValueClass(String(key), value)">
+            {{ formatIndicatorValue(String(key), value) }}
           </span>
         </div>
       </div>
@@ -231,7 +231,7 @@ const formatIndicatorName = (key: string) => {
   return names[key] || key
 }
 
-const formatIndicatorValue = (key: string, value: any) => {
+const formatIndicatorValue = (_key: string, value: any) => {
   if (typeof value === 'boolean') {
     return value ? '✅' : '❌'
   }

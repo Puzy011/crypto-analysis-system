@@ -57,7 +57,7 @@
             :key="topic"
             class="distribution-item"
           >
-            <span class="dist-topic">{{ getTopicName(topic) }}</span>
+            <span class="dist-topic">{{ getTopicName(String(topic)) }}</span>
             <div class="dist-bar">
               <div 
                 class="dist-fill" 

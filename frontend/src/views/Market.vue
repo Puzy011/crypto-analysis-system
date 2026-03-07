@@ -191,8 +191,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
-import { Refresh, Star, Delete } from '@element-plus/icons-vue'
-import { createChart, IChartApi, ISeriesApi } from 'lightweight-charts'
+import { Refresh, Star } from '@element-plus/icons-vue'
+import { createChart, IChartApi, ISeriesApi, ColorType, UTCTimestamp } from 'lightweight-charts'
 import axios from 'axios'
 import { useWatchlistStore } from '@/stores/watchlist'
 import { ElMessage } from 'element-plus'
@@ -247,7 +247,7 @@ const initChart = () => {
     width: chartContainer.value.clientWidth,
     height: 400,
     layout: {
-      background: { type: 'solid', color: '#ffffff' },
+      background: { type: ColorType.Solid, color: '#ffffff' },
       textColor: '#333',
     },
     grid: {
@@ -277,7 +277,7 @@ const updateChart = (data: any[]) => {
   if (!candlestickSeries) return
   
   const formattedData = data.map((k: any) => ({
-    time: k.timestamp / 1000,
+    time: (k.timestamp / 1000) as UTCTimestamp,
     open: k.open,
     high: k.high,
     low: k.low,

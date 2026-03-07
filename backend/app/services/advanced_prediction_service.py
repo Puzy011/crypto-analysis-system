@@ -54,6 +54,7 @@ class AdvancedPredictionService:
         self.scalers = {}
         self.feature_importance = {}
         self.prediction_history = defaultdict(list)
+        self.model_metrics = {}
         
         # 模型配置
         self.model_configs = {
@@ -91,7 +92,8 @@ class AdvancedPredictionService:
         self,
         df: pd.DataFrame,
         target_col: str = "close",
-        lookback_periods: List[int] = None
+        lookback_periods: List[int] = None,
+        target_steps: Optional[Dict[str, int]] = None,
     ) -> pd.DataFrame:
         """
         创建高级特征
@@ -153,8 +155,48 @@ class AdvancedPredictionService:
                 df["macd"] = ema12 - ema26
                 df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
                 df["macd_hist"] = df["macd"] - df["macd_signal"]
-        
-        # 4. 周期性特征
+
+        # 4. 市场微观结构与波动特征
+        df["hl_range"] = (df["high"] - df["low"]) / (df[target_col] + 1e-8)
+        df["oc_change"] = (df["close"] - df["open"]) / (df["open"] + 1e-8)
+        df["vwap"] = (df["close"] * df["volume"]).cumsum() / (df["volume"].cumsum() + 1e-8)
+        df["vwap_distance"] = (df[target_col] - df["vwap"]) / (df["vwap"] + 1e-8)
+
+        true_range = pd.concat(
+            [
+                (df["high"] - df["low"]).abs(),
+                (df["high"] - df["close"].shift(1)).abs(),
+                (df["low"] - df["close"].shift(1)).abs(),
+            ],
+            axis=1
+        ).max(axis=1)
+        df["atr_14"] = true_range.rolling(window=14).mean()
+        df["atr_pct"] = df["atr_14"] / (df[target_col] + 1e-8)
+
+        bb_mid = df[target_col].rolling(window=20).mean()
+        bb_std = df[target_col].rolling(window=20).std()
+        df["bb_upper"] = bb_mid + 2 * bb_std
+        df["bb_lower"] = bb_mid - 2 * bb_std
+        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / (bb_mid + 1e-8)
+        df["bb_position"] = (df[target_col] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-8)
+
+        obv_step = np.where(df[target_col].diff() >= 0, df["volume"], -df["volume"])
+        df["obv"] = pd.Series(obv_step, index=df.index).cumsum()
+        df["obv_trend_10"] = df["obv"] - df["obv"].shift(10)
+
+        vol_mean = df["volume"].rolling(window=20).mean()
+        vol_std = df["volume"].rolling(window=20).std()
+        df["volume_zscore"] = (df["volume"] - vol_mean) / (vol_std + 1e-8)
+        df["return_zscore"] = (df["returns"] - df["returns"].rolling(20).mean()) / (
+            df["returns"].rolling(20).std() + 1e-8
+        )
+
+        # 5. 趋势斜率特征
+        for period in [10, 20, 50]:
+            roll_mean = df[target_col].rolling(window=period).mean()
+            df[f"slope_{period}"] = (roll_mean - roll_mean.shift(period // 2)) / (roll_mean.shift(period // 2) + 1e-8)
+
+        # 6. 周期性特征
         if "timestamp" in df.columns:
             df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
         elif df.index.dtype == "datetime64[ns]":
@@ -171,17 +213,20 @@ class AdvancedPredictionService:
         df["dayofmonth"] = df["datetime"].dt.day
         df["month"] = df["datetime"].dt.month
         
-        # 5. 滞后特征
+        # 7. 滞后特征
         for i in range(1, 6):
             df[f"lag_{i}"] = df[target_col].shift(i)
             df[f"lag_return_{i}"] = df["returns"].shift(i)
         
-        # 6. 目标变量（未来收益率）
-        df["target_1h"] = df[target_col].shift(-1) / df[target_col] - 1
-        df["target_4h"] = df[target_col].shift(-4) / df[target_col] - 1
-        df["target_24h"] = df[target_col].shift(-24) / df[target_col] - 1
+        # 8. 目标变量（未来收益率）
+        default_target_steps = {"1h": 1, "4h": 4, "24h": 24}
+        step_config = target_steps or default_target_steps
+        for label, step in step_config.items():
+            safe_step = max(1, int(step))
+            df[f"target_{label}"] = df[target_col].shift(-safe_step) / df[target_col] - 1
         
-        # 移除 NaN
+        # 清理异常值后移除 NaN
+        df = df.replace([np.inf, -np.inf], np.nan)
         df = df.dropna()
         
         return df
@@ -421,49 +466,71 @@ class AdvancedPredictionService:
         y_pred: np.ndarray
     ) -> Dict[str, float]:
         """评估模型性能"""
+        y_true_arr = np.array(y_true, dtype=float)
+        y_pred_arr = np.array(y_pred, dtype=float)
+
         if not HAS_SKLEARN:
             return {
-                "mse": float(np.mean((y_true - y_pred) ** 2)),
-                "mae": float(np.mean(np.abs(y_true - y_pred)))
+                "mse": float(np.mean((y_true_arr - y_pred_arr) ** 2)),
+                "mae": float(np.mean(np.abs(y_true_arr - y_pred_arr))),
+                "directional_accuracy": float(
+                    np.mean((np.sign(y_true_arr) == np.sign(y_pred_arr)).astype(int))
+                ),
             }
         
         return {
-            "mse": float(mean_squared_error(y_true, y_pred)),
-            "mae": float(mean_absolute_error(y_true, y_pred)),
-            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-            "r2": float(r2_score(y_true, y_pred)),
+            "mse": float(mean_squared_error(y_true_arr, y_pred_arr)),
+            "mae": float(mean_absolute_error(y_true_arr, y_pred_arr)),
+            "rmse": float(np.sqrt(mean_squared_error(y_true_arr, y_pred_arr))),
+            "r2": float(r2_score(y_true_arr, y_pred_arr)),
             "directional_accuracy": float(
-                np.mean((np.sign(y_true) == np.sign(y_pred)).astype(int))
+                np.mean((np.sign(y_true_arr) == np.sign(y_pred_arr)).astype(int))
             )
         }
+
+    def update_model_metrics(self, model_key: str, metrics: Dict[str, float]):
+        """记录模型评估指标，用于后续加权集成"""
+        if not metrics:
+            return
+        self.model_metrics[model_key] = metrics
     
     def get_ensemble_prediction(
         self,
         symbol: str,
         X: pd.DataFrame,
-        df_with_dates: pd.DataFrame = None
+        df_with_dates: pd.DataFrame = None,
+        trade_type: str = "intraday",
     ) -> Dict[str, Any]:
         """
         获取所有可用模型的集成预测
         
         参考: Deep Learning for Stock Prediction 的集成方法
         """
-        predictions = {}
+        predictions: Dict[str, float] = {}
+        model_weights: Dict[str, float] = {}
         model_keys = [key for key in self.models.keys() if key.startswith(symbol)]
+        current_price = float(df_with_dates["close"].iloc[-1]) if df_with_dates is not None else None
         
         for model_key in model_keys:
             if "prophet" in model_key and df_with_dates is not None:
                 # Prophet 特殊处理
                 model = self.models[model_key]
-                future = model.make_future_dataframe(periods=24, freq="H")
+                future = model.make_future_dataframe(periods=1, freq="H")
                 forecast = model.predict(future)
-                pred = forecast["yhat"].iloc[-1]
-                predictions[model_key] = float(pred)
+                pred_price = float(forecast["yhat"].iloc[-1])
+                if current_price and current_price > 0:
+                    pred_return = pred_price / current_price - 1
+                else:
+                    pred_return = 0.0
+                predictions[model_key] = float(pred_return)
             else:
                 # 其他模型
                 pred = self.predict_with_model(model_key, X.iloc[-1:])
                 if pred is not None:
                     predictions[model_key] = float(pred[0])
+
+            if model_key in predictions:
+                model_weights[model_key] = self._get_model_weight(model_key)
         
         if not predictions:
             return {
@@ -471,21 +538,121 @@ class AdvancedPredictionService:
                 "message": "没有可用的预测模型"
             }
         
-        # 简单平均集成
-        mean_pred = np.mean(list(predictions.values()))
+        # 按历史表现加权集成
+        total_weight = sum(model_weights.values()) or 1.0
+        normalized_weights = {
+            k: v / total_weight
+            for k, v in model_weights.items()
+        }
+        mean_pred = float(sum(predictions[k] * normalized_weights[k] for k in predictions))
         
+        preds = list(predictions.values())
+        pred_std = float(np.std(preds)) if len(preds) > 1 else 0.0
+        signs = [np.sign(p) for p in preds if abs(p) > 1e-8]
+        agreement_score = float(max(0.0, np.mean([1.0 if s == np.sign(mean_pred) else 0.0 for s in signs]))) if signs else 0.5
+
         # 方向判断
-        direction = "up" if mean_pred > 0 else "down"
-        confidence = min(abs(mean_pred) * 10, 1.0)  # 归一化到 0-1
+        if abs(mean_pred) < 0.001:
+            direction = "sideways"
+        elif mean_pred > 0:
+            direction = "up"
+        else:
+            direction = "down"
+
+        avg_acc = np.mean(
+            [
+                self.model_metrics.get(k, {}).get("directional_accuracy", 0.5)
+                for k in predictions
+            ]
+        ) if predictions else 0.5
+        strength = min(abs(mean_pred) * 20, 1.0)
+        confidence = float(max(0.2, min(0.98, 0.35 * strength + 0.4 * agreement_score + 0.25 * avg_acc)))
+
+        # 预测区间
+        z_map = {
+            "realtime": 1.28,  # 约 80%
+            "intraday": 1.65,  # 约 90%
+            "longterm": 1.96,  # 约 95%
+        }
+        z = z_map.get(trade_type, 1.65)
+        pred_interval = {
+            "lower_return": float(mean_pred - z * pred_std),
+            "upper_return": float(mean_pred + z * pred_std),
+        }
+        if current_price is not None:
+            pred_interval["lower_price"] = float(current_price * (1 + pred_interval["lower_return"]))
+            pred_interval["upper_price"] = float(current_price * (1 + pred_interval["upper_return"]))
+
+        regime = self._detect_market_regime(X)
+
+        self.prediction_history[symbol].append(
+            {
+                "timestamp": int(datetime.now().timestamp() * 1000),
+                "symbol": symbol,
+                "final_direction": direction,
+                "final_label": "看涨" if direction == "up" else ("看跌" if direction == "down" else "震荡"),
+                "final_confidence": confidence,
+                "predicted_return": mean_pred,
+                "agreement_score": agreement_score,
+            }
+        )
         
         return {
             "success": True,
             "symbol": symbol,
+            "trade_type": trade_type,
             "direction": direction,
-            "confidence": float(confidence),
-            "predicted_return": float(mean_pred),
+            "confidence": confidence,
+            "predicted_return": mean_pred,
             "individual_predictions": predictions,
-            "model_count": len(predictions)
+            "model_weights": normalized_weights,
+            "prediction_interval": pred_interval,
+            "agreement_score": agreement_score,
+            "market_regime": regime,
+            "model_count": len(predictions),
+            "prediction_history": list(self.prediction_history[symbol])[-20:],
+        }
+
+    def _get_model_weight(self, model_key: str) -> float:
+        """
+        根据历史评估指标生成模型权重。
+        """
+        metrics = self.model_metrics.get(model_key, {})
+        directional_acc = float(metrics.get("directional_accuracy", 0.5))
+        rmse = float(metrics.get("rmse", 0.02))
+        rmse_penalty = 1.0 / (1.0 + rmse * 100)
+        return max(0.1, directional_acc * 0.7 + rmse_penalty * 0.3)
+
+    def _detect_market_regime(self, X: pd.DataFrame) -> Dict[str, Any]:
+        """
+        识别市场状态（趋势/震荡 + 波动率）。
+        """
+        if X is None or X.empty:
+            return {"trend_regime": "unknown", "volatility_regime": "unknown"}
+
+        row = X.iloc[-1]
+        slope_20 = float(row.get("slope_20", 0.0))
+        vol_20 = float(row.get("volatility_20", 0.0))
+
+        if slope_20 > 0.01:
+            trend_regime = "uptrend"
+        elif slope_20 < -0.01:
+            trend_regime = "downtrend"
+        else:
+            trend_regime = "sideways"
+
+        if vol_20 > 0.8:
+            vol_regime = "high_volatility"
+        elif vol_20 < 0.2:
+            vol_regime = "low_volatility"
+        else:
+            vol_regime = "normal_volatility"
+
+        return {
+            "trend_regime": trend_regime,
+            "volatility_regime": vol_regime,
+            "slope_20": slope_20,
+            "volatility_20": vol_20,
         }
     
     def get_top_features(

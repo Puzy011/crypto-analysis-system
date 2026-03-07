@@ -197,7 +197,7 @@
                   v-model="updateForm.prediction.confidence"
                   :min="0"
                   :max="100"
-                  :show-input
+                  show-input
                 />
               </el-form-item>
               <el-form-item label="预测价格（可选）">

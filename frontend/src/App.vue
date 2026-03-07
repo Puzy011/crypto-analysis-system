@@ -189,7 +189,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { 
   TrendCharts, Star, Bell, MagicStick, View, ChatLineSquare, 
@@ -201,10 +201,6 @@ const router = useRouter()
 
 const activeTab = ref('/')
 const moreDrawerVisible = ref(false)
-
-const isMobile = computed(() => {
-  return window.innerWidth <= 768
-})
 
 watch(() => route.path, (newPath) => {
   if (['/', '/market', '/watchlist', '/prediction'].includes(newPath)) {

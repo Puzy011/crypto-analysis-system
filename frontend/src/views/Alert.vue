@@ -138,13 +138,24 @@ import { ref, computed } from 'vue'
 import { useAlertStore } from '@/stores/alert'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { PriceAlert } from '@/stores/alert'
 
 const alertStore = useAlertStore()
 const showAddDialog = ref(false)
 
-const newAlert = ref({
+type AlertType = PriceAlert['type']
+
+interface NewAlertForm {
+  symbol: string
+  type: AlertType
+  targetPrice: number | undefined
+  targetChange: number | undefined
+  enabled: boolean
+}
+
+const newAlert = ref<NewAlertForm>({
   symbol: 'BTCUSDT',
-  type: 'price_above' as const,
+  type: 'price_above',
   targetPrice: undefined as number | undefined,
   targetChange: undefined as number | undefined,
   enabled: true

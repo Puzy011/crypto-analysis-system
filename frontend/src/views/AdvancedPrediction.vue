@@ -14,6 +14,11 @@
           <option value="ETHUSDT">ETH/USDT</option>
           <option value="BNBUSDT">BNB/USDT</option>
         </select>
+        <select v-model="tradeType" class="input-select">
+          <option value="realtime">实时短线 (15m)</option>
+          <option value="intraday">日内波段 (1h)</option>
+          <option value="longterm">中长线 (4h)</option>
+        </select>
         <select v-model="targetHorizon" class="input-select">
           <option value="1h">1小时预测</option>
           <option value="4h">4小时预测</option>
@@ -38,6 +43,19 @@
           </div>
           <div class="prediction-return">
             预期收益: {{ (prediction.predicted_return * 100).toFixed(2) }}%
+          </div>
+          <div class="prediction-return" v-if="prediction.prediction_interval">
+            区间(90%): {{ (prediction.prediction_interval.lower_return * 100).toFixed(2) }}% ~
+            {{ (prediction.prediction_interval.upper_return * 100).toFixed(2) }}%
+          </div>
+          <div class="prediction-return" v-if="prediction.agreement_score !== undefined">
+            模型一致性: {{ (prediction.agreement_score * 100).toFixed(1) }}%
+          </div>
+          <div class="prediction-return" v-if="prediction.market_regime">
+            市场状态: {{ prediction.market_regime.trend_regime }} / {{ prediction.market_regime.volatility_regime }}
+          </div>
+          <div class="prediction-return" v-if="prediction.trade_type_label">
+            模式: {{ prediction.trade_type_label }} ({{ prediction.interval }}) / 目标步长 {{ prediction.target_bars }} 根K线
           </div>
         </div>
 
@@ -89,9 +107,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 
 const selectedSymbol = ref('BTCUSDT')
+const tradeType = ref('intraday')
 const targetHorizon = ref('1h')
 const isTraining = ref(false)
 const prediction = ref<any>(null)
@@ -113,6 +132,7 @@ const trainModels = async () => {
       body: JSON.stringify({
         symbol: selectedSymbol.value,
         target_horizon: targetHorizon.value,
+        trade_type: tradeType.value,
         use_xgboost: true,
         use_lightgbm: true,
         use_random_forest: true,
@@ -132,11 +152,14 @@ const trainModels = async () => {
 const getPrediction = async () => {
   try {
     const response = await fetch(
-      `${apiBase}/advanced-prediction/predict/${selectedSymbol.value}?target_horizon=${targetHorizon.value}`
+      `${apiBase}/advanced-prediction/predict/${selectedSymbol.value}?target_horizon=${targetHorizon.value}&trade_type=${tradeType.value}`
     )
     prediction.value = await response.json()
+    predictionHistory.value = prediction.value?.prediction_history || []
     
-    const featResponse = await fetch(`${apiBase}/advanced-prediction/features/${selectedSymbol.value}`)
+    const featResponse = await fetch(
+      `${apiBase}/advanced-prediction/features/${selectedSymbol.value}?trade_type=${tradeType.value}`
+    )
     const featData = await featResponse.json()
     topFeatures.value = featData.feature_importance || {}
   } catch (error) {
@@ -145,6 +168,10 @@ const getPrediction = async () => {
 }
 
 onMounted(() => {
+  getPrediction()
+})
+
+watch([selectedSymbol, tradeType, targetHorizon], () => {
   getPrediction()
 })
 </script>

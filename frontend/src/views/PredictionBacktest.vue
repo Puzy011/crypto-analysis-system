@@ -54,7 +54,7 @@
                 />
               </el-descriptions-item>
               <el-descriptions-item label="平均价格误差">
-                {{ (backtestReport.accuracy_stats?.avg_price_error || 0) * 100 | toFixed(2) }}%
+                {{ ((backtestReport.accuracy_stats?.avg_price_error || 0) * 100).toFixed(2) }}%
               </el-descriptions-item>
             </el-descriptions>
             
@@ -137,7 +137,7 @@
                   placeholder="验证状态"
                   clearable
                 >
-                  <el-option :label="全部" :value="null" />
+                  <el-option label="全部" :value="null" />
                   <el-option label="已验证" :value="true" />
                   <el-option label="待验证" :value="false" />
                 </el-select>
@@ -194,7 +194,7 @@
                   v-model="predictionForm.prediction.confidence"
                   :min="0"
                   :max="100"
-                  :show-input
+                  show-input
                 />
               </el-form-item>
               <el-form-item label="预测价格（可选）">

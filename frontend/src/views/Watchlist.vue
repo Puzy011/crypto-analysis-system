@@ -90,7 +90,7 @@ const loadWatchlistTickers = async () => {
       )
       watchlistTickers.value = watchlistStore.watchlist.map(item => ({
         ...item,
-        ...symbolMap.get(item.symbol)
+        ...(symbolMap.get(item.symbol) || {})
       }))
     }
   } catch (error) {

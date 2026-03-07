@@ -3,14 +3,24 @@
 参考: FinBERT, Stock News Sentiment Analysis, Cryptocurrency Sentiment Analysis
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timedelta
-from collections import defaultdict, Counter
-import re
 import math
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import requests
+import xml.etree.ElementTree as ET
+
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
 
 
 @dataclass
@@ -25,6 +35,7 @@ class NewsImpact:
     price_after_24h: float
     impact_score: float
     impact_label: str
+    event_tags: List[str]
 
 
 class ComprehensiveSentimentService:
@@ -155,6 +166,355 @@ class ComprehensiveSentimentService:
         
         # 舆情历史
         self.sentiment_history = defaultdict(lambda: defaultdict(list))
+
+        # 强度副词和否定词（用于更接近 FinBERT 的规则增强）
+        self.intensifiers = {
+            "very": 1.25, "extremely": 1.5, "significantly": 1.3, "massively": 1.4,
+            "非常": 1.25, "强烈": 1.4, "明显": 1.2, "大幅": 1.4
+        }
+        self.negations = {"not", "never", "no", "without", "无", "不", "并非", "未"}
+
+        # 事件标签词典
+        self.event_keywords = {
+            "regulation": ["sec", "regulation", "ban", "lawsuit", "监管", "禁令", "诉讼"],
+            "security": ["hack", "exploit", "breach", "attack", "黑客", "漏洞", "被盗"],
+            "adoption": ["adoption", "integration", "partnership", "上线", "合作", "接入"],
+            "macro": ["fed", "rate", "inflation", "宏观", "利率", "通胀"],
+            "etf": ["etf", "approval", "申报", "通过"],
+            "whale": ["whale", "large transfer", "巨鲸", "大额转账", "主力"]
+        }
+
+        # 新闻源权重（可信度）
+        self.source_weights = {
+            "coindesk": 1.0,
+            "cointelegraph": 0.95,
+            "decrypt": 0.90,
+            "the block": 1.0,
+            "binance": 0.90,
+            "okx": 0.85,
+            "unknown": 0.75
+        }
+
+        # 币种别名
+        self.asset_alias = {
+            "BTC": ["btc", "bitcoin", "比特币"],
+            "ETH": ["eth", "ethereum", "以太坊"],
+            "SOL": ["sol", "solana"],
+            "BNB": ["bnb", "binance coin"],
+            "XRP": ["xrp", "ripple"],
+            "ADA": ["ada", "cardano"],
+            "DOGE": ["doge", "dogecoin"]
+        }
+
+        # 公开 RSS 新闻源（无需 API Key）
+        self.news_feeds = [
+            {"source": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+            {"source": "Cointelegraph", "url": "https://cointelegraph.com/rss"},
+            {"source": "Decrypt", "url": "https://decrypt.co/feed"},
+            {"source": "The Block", "url": "https://www.theblock.co/rss.xml"}
+        ]
+
+        # 简单内存缓存，减少频繁请求
+        self.news_cache: Dict[str, Dict[str, Any]] = {}
+        self.news_cache_ttl = timedelta(minutes=5)
+
+    def fetch_market_news(
+        self,
+        symbol: str,
+        limit: int = 30,
+        hours: int = 72,
+        force_refresh: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        获取实时新闻（RSS），失败时降级到模板新闻。
+        """
+        cache_key = f"{symbol}_{limit}_{hours}"
+        now = datetime.now(timezone.utc)
+        if not force_refresh:
+            cached = self.news_cache.get(cache_key)
+            if cached and now - cached["updated_at"] < self.news_cache_ttl:
+                return cached["items"][:limit]
+
+        asset = self._extract_base_asset(symbol)
+        aliases = self.asset_alias.get(asset, [asset.lower()])
+        cutoff_ts = int((now - timedelta(hours=hours)).timestamp() * 1000)
+        seen_titles = set()
+        all_news: List[Dict[str, Any]] = []
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        }
+
+        for feed in self.news_feeds:
+            try:
+                resp = requests.get(feed["url"], headers=headers, timeout=8)
+                if resp.status_code != 200 or not resp.text:
+                    continue
+
+                entries = self._parse_feed_entries(resp.text)
+                for idx, entry in enumerate(entries):
+                    title = entry.get("title", "")
+                    if not title:
+                        continue
+
+                    desc = entry.get("description", "")
+                    composed = f"{title} {desc}".lower()
+                    if not self._is_relevant_news(composed, aliases, asset):
+                        continue
+
+                    norm_title = self._normalize_title(title)
+                    if norm_title in seen_titles:
+                        continue
+                    seen_titles.add(norm_title)
+
+                    link = entry.get("link", "")
+                    published_str = entry.get("published", "")
+                    ts = self._parse_timestamp(published_str)
+                    if ts < cutoff_ts:
+                        continue
+
+                    all_news.append(
+                        {
+                            "id": f"{feed['source'].lower()}_{ts}_{idx}",
+                            "title": title.strip(),
+                            "content": desc.strip(),
+                            "source": feed["source"],
+                            "url": link.strip(),
+                            "timestamp": ts,
+                            "published_at": datetime.fromtimestamp(
+                                ts / 1000, tz=timezone.utc
+                            ).isoformat(),
+                            "symbol": symbol,
+                        }
+                    )
+            except Exception:
+                continue
+
+        all_news.sort(key=lambda x: x["timestamp"], reverse=True)
+        if not all_news:
+            all_news = self._generate_fallback_news(symbol, max(10, min(limit, 20)))
+
+        self.news_cache[cache_key] = {"updated_at": now, "items": all_news[:limit]}
+        return all_news[:limit]
+
+    def build_sentiment_index(
+        self,
+        symbol: str,
+        news_list: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        构建综合舆情指数（时间衰减 + 来源权重）。
+        """
+        if not news_list:
+            return {
+                "symbol": symbol,
+                "fear_greed_index": 50.0,
+                "market_state": "中性",
+                "market_state_emoji": "⚪",
+                "avg_sentiment_score": 0.0,
+                "weighted_sentiment_score": 0.0,
+                "sentiment_distribution": {"neutral": 0},
+                "event_distribution": {},
+                "source_distribution": {},
+                "source_diversity_score": 0.0,
+                "momentum_24h": 0.0,
+                "news_analyzed": 0,
+                "hot_topics": [],
+            }
+
+        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        weighted_scores: List[float] = []
+        raw_scores: List[float] = []
+        source_dist: Counter = Counter()
+        label_dist: Counter = Counter()
+        event_dist: Counter = Counter()
+
+        for news in news_list:
+            analysis = news.get("enhanced_sentiment") or news.get("sentiment_analysis")
+            if not analysis:
+                analysis = self.analyze_financial_sentiment(
+                    f"{news.get('title', '')} {news.get('content', '')}"
+                )
+
+            score = float(analysis.get("sentiment_score", 0.0))
+            label = analysis.get("sentiment_label", "neutral")
+            raw_scores.append(score)
+            label_dist[label] += 1
+
+            source = str(news.get("source", "unknown")).lower()
+            source_dist[source] += 1
+            source_w = self._source_weight(source)
+
+            age_h = max(0.0, (now_ts - int(news.get("timestamp", now_ts))) / 3600000)
+            time_w = math.exp(-age_h / 24)
+            weighted_scores.append(score * source_w * time_w)
+
+            for evt in analysis.get("event_tags", []):
+                event_dist[evt] += 1
+
+        avg_score = float(np.mean(raw_scores)) if raw_scores else 0.0
+        weighted_score = (
+            float(np.sum(weighted_scores) / (np.sum(np.abs(weighted_scores)) + 1e-8))
+            if weighted_scores
+            else 0.0
+        )
+
+        fear_greed = float(max(0.0, min(100.0, 50 + weighted_score * 50)))
+        if fear_greed >= 75:
+            market_state, emoji = "极度贪婪", "🟢"
+        elif fear_greed >= 60:
+            market_state, emoji = "贪婪", "🟡"
+        elif fear_greed >= 40:
+            market_state, emoji = "中性", "⚪"
+        elif fear_greed >= 25:
+            market_state, emoji = "恐惧", "🟠"
+        else:
+            market_state, emoji = "极度恐惧", "🔴"
+
+        recent_scores = [
+            s
+            for n, s in zip(news_list, raw_scores)
+            if now_ts - int(n.get("timestamp", now_ts)) <= 24 * 3600000
+        ]
+        old_scores = [
+            s
+            for n, s in zip(news_list, raw_scores)
+            if now_ts - int(n.get("timestamp", now_ts)) > 24 * 3600000
+        ]
+        momentum = (
+            float(np.mean(recent_scores) - np.mean(old_scores))
+            if recent_scores and old_scores
+            else 0.0
+        )
+
+        hot_topics = [
+            word for word, _ in self.extract_keywords_tfidf(
+                [n.get("title", "") for n in news_list], top_n=8
+            )
+        ]
+        source_diversity = float(
+            min(1.0, len(source_dist) / max(1, len(self.news_feeds)))
+        )
+        result = {
+            "symbol": symbol,
+            "fear_greed_index": fear_greed,
+            "market_state": market_state,
+            "market_state_emoji": emoji,
+            "avg_sentiment_score": avg_score,
+            "weighted_sentiment_score": weighted_score,
+            "sentiment_distribution": dict(label_dist),
+            "event_distribution": dict(event_dist),
+            "source_distribution": dict(source_dist),
+            "source_diversity_score": source_diversity,
+            "momentum_24h": momentum,
+            "news_analyzed": len(news_list),
+            "hot_topics": hot_topics,
+        }
+        self._append_sentiment_history(symbol, result)
+        return result
+
+    def forecast_sentiment_trend(
+        self,
+        symbol: str,
+        sentiment_index: Dict[str, Any],
+        news_list: List[Dict[str, Any]],
+        hours_ahead: int = 24,
+    ) -> Dict[str, Any]:
+        """
+        预测未来舆情趋势（线性趋势 + 动量融合）。
+        """
+        horizon = max(1, min(int(hours_ahead), 72))
+        current_score = float(sentiment_index.get("weighted_sentiment_score", 0.0))
+        history_points = list(self.sentiment_history[symbol]["index"])[-240:]
+
+        if not history_points:
+            forecast_score = current_score
+            slope_per_hour = 0.0
+            sample_points = 0
+        else:
+            timestamps = np.array([float(p.get("timestamp", 0.0)) for p in history_points], dtype=float)
+            scores = np.array([float(p.get("weighted_sentiment_score", current_score)) for p in history_points], dtype=float)
+
+            if len(scores) >= 2 and np.max(timestamps) > np.min(timestamps):
+                x_hours = (timestamps - np.min(timestamps)) / 3600000.0
+                slope_per_hour, intercept = np.polyfit(x_hours, scores, 1)
+                trend_forecast = float(intercept + slope_per_hour * (x_hours[-1] + horizon))
+            else:
+                slope_per_hour = 0.0
+                trend_forecast = current_score
+
+            momentum = float(sentiment_index.get("momentum_24h", 0.0))
+            forecast_score = float(trend_forecast * 0.75 + (current_score + 0.6 * momentum) * 0.25)
+            sample_points = len(scores)
+
+        forecast_score = float(max(-1.0, min(1.0, forecast_score)))
+        delta = float(forecast_score - current_score)
+
+        if delta > 0.06:
+            direction = "up"
+            direction_label = "舆情升温"
+        elif delta < -0.06:
+            direction = "down"
+            direction_label = "舆情降温"
+        else:
+            direction = "sideways"
+            direction_label = "舆情平稳"
+
+        expected_fg = float(max(0.0, min(100.0, 50 + forecast_score * 50)))
+        confidence = float(
+            max(
+                0.35,
+                min(
+                    0.96,
+                    0.45
+                    + min(sample_points, 80) / 200
+                    + min(abs(delta), 0.3) * 0.8,
+                ),
+            )
+        )
+
+        event_dist = sentiment_index.get("event_distribution", {}) or {}
+        top_events = sorted(event_dist.items(), key=lambda x: x[1], reverse=True)[:3]
+        drivers = []
+        if top_events:
+            drivers.append("高频事件: " + ", ".join([f"{evt}({cnt})" for evt, cnt in top_events]))
+        hot_topics = sentiment_index.get("hot_topics", []) or []
+        if hot_topics:
+            drivers.append("热点关键词: " + ", ".join(hot_topics[:5]))
+        if not drivers:
+            drivers.append("新闻分布较分散，暂无明显单一驱动")
+
+        return {
+            "symbol": symbol,
+            "hours_ahead": horizon,
+            "current_score": current_score,
+            "forecast_score": forecast_score,
+            "delta": delta,
+            "direction": direction,
+            "direction_label": direction_label,
+            "expected_fear_greed_index": expected_fg,
+            "confidence": confidence,
+            "slope_per_hour": float(slope_per_hour),
+            "sample_points": sample_points,
+            "drivers": drivers,
+            "model": "linear_momentum_blend",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _append_sentiment_history(self, symbol: str, index_result: Dict[str, Any]) -> None:
+        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        rec = {
+            "timestamp": now_ts,
+            "weighted_sentiment_score": float(index_result.get("weighted_sentiment_score", 0.0)),
+            "fear_greed_index": float(index_result.get("fear_greed_index", 50.0)),
+        }
+        hist = self.sentiment_history[symbol]["index"]
+        hist.append(rec)
+        if len(hist) > 500:
+            del hist[:-500]
     
     def extract_keywords_tfidf(
         self,
@@ -287,77 +647,84 @@ class ComprehensiveSentimentService:
         text: str
     ) -> Dict[str, Any]:
         """
-        FinBERT 风格金融情感分析
-        
-        参考: ProsusAI/finbert
+        FinBERT 风格金融情感分析（规则增强版）
         """
+        cleaned = text.lower()
+        raw_tokens = re.findall(r"[a-zA-Z\u4e00-\u9fff][a-zA-Z0-9\u4e00-\u9fff\-]*", cleaned)
         words = self._preprocess_text(text)
-        text_lower = text.lower()
-        
-        # 1. 基于金融情感词典的评分
-        sentiment_scores = []
-        matched_words = []
-        
-        for word in words:
-            if word in self.financial_sentiment_dict:
-                score = self.financial_sentiment_dict[word]
-                sentiment_scores.append(score)
-                matched_words.append((word, score))
-        
-        # 2. n-gram 匹配
-        for n in [3, 2]:
-            for i in range(len(words) - n + 1):
-                ngram = " ".join(words[i:i+n])
-                if ngram in self.financial_sentiment_dict:
-                    score = self.financial_sentiment_dict[ngram]
-                    sentiment_scores.append(score)
-                    matched_words.append((ngram, score))
-        
-        # 3. 计算综合情感分
-        if not sentiment_scores:
-            sentiment_score = 0.0
-            sentiment_label = "neutral"
-            confidence = 0.5
+        sentiment_scores: List[float] = []
+        matched_words: List[Tuple[str, float]] = []
+
+        # 1) 单词情感分，考虑否定词和程度副词
+        for i, token in enumerate(raw_tokens):
+            if token not in self.financial_sentiment_dict:
+                continue
+
+            base_score = float(self.financial_sentiment_dict[token])
+            prev_tokens = raw_tokens[max(0, i - 2):i]
+            intensity = 1.0
+            for prev in prev_tokens:
+                intensity *= self.intensifiers.get(prev, 1.0)
+
+            if any(prev in self.negations for prev in prev_tokens):
+                base_score = -0.8 * base_score
+
+            final_score = base_score * intensity
+            sentiment_scores.append(final_score)
+            matched_words.append((token, round(final_score, 3)))
+
+        # 2) n-gram 匹配补充
+        for phrase, phrase_score in self.financial_sentiment_dict.items():
+            if " " not in phrase:
+                continue
+            count = cleaned.count(phrase)
+            if count <= 0:
+                continue
+            for _ in range(count):
+                sentiment_scores.append(float(phrase_score))
+                matched_words.append((phrase, float(phrase_score)))
+
+        # 3) 汇总分数
+        if sentiment_scores:
+            raw_score = float(np.mean(sentiment_scores))
+            sentiment_score = float(np.tanh(raw_score / 1.5))
         else:
-            # 加权平均（考虑词频和强度）
-            sentiment_score = float(np.mean(sentiment_scores))
-            
-            # 归一化到 [-1, 1]
-            sentiment_score = max(-1.0, min(1.0, sentiment_score))
-            
-            # 确定情感标签
-            if sentiment_score > 0.5:
-                sentiment_label = "very_positive"
-                confidence = 0.5 + sentiment_score * 0.5
-            elif sentiment_score > 0.1:
-                sentiment_label = "positive"
-                confidence = 0.5 + sentiment_score * 0.5
-            elif sentiment_score < -0.5:
-                sentiment_label = "very_negative"
-                confidence = 0.5 - sentiment_score * 0.5
-            elif sentiment_score < -0.1:
-                sentiment_label = "negative"
-                confidence = 0.5 - sentiment_score * 0.5
-            else:
-                sentiment_label = "neutral"
-                confidence = 0.5 + (1 - abs(sentiment_score)) * 0.5
-        
-        # 4. 提取实体
+            sentiment_score = 0.0
+
+        if sentiment_score > 0.55:
+            sentiment_label = "very_positive"
+        elif sentiment_score > 0.15:
+            sentiment_label = "positive"
+        elif sentiment_score < -0.55:
+            sentiment_label = "very_negative"
+        elif sentiment_score < -0.15:
+            sentiment_label = "negative"
+        else:
+            sentiment_label = "neutral"
+
+        coverage = min(1.0, len(matched_words) / max(len(words), 1))
+        confidence = float(
+            max(0.35, min(0.98, 0.45 + 0.35 * abs(sentiment_score) + 0.2 * coverage))
+        )
+
+        # 4) 语义标签
         entities = self._extract_entities(text)
-        
-        # 5. 提取关键词
         keywords_textrank = self.extract_keywords_textrank(text, top_n=8)
+        event_tags = self._extract_event_tags(text)
+        risk_flags = [evt for evt in event_tags if evt in {"security", "regulation"}]
         
         return {
-            "text": text[:150] + "..." if len(text) > 150 else text,
+            "text": text[:180] + "..." if len(text) > 180 else text,
             "sentiment_score": sentiment_score,
             "sentiment_label": sentiment_label,
             "confidence": float(confidence),
-            "matched_words": matched_words,
+            "matched_words": matched_words[:12],
             "entities": entities,
             "keywords": [word for word, score in keywords_textrank],
             "keyword_scores": keywords_textrank,
-            "analyzed_at": datetime.now().isoformat()
+            "event_tags": event_tags,
+            "risk_flags": risk_flags,
+            "analyzed_at": datetime.now(timezone.utc).isoformat()
         }
     
     def analyze_news_price_impact(
@@ -367,24 +734,32 @@ class ComprehensiveSentimentService:
         price_data: pd.DataFrame
     ) -> Dict[str, Any]:
         """
-        新闻-价格关联分析
-        
-        参考: Stock News Sentiment Analysis
+        新闻-价格滞后关联分析
         """
         if not news_list or price_data.empty:
             return {"message": "数据不足"}
         
-        impacts = []
-        price_dict = {
-            row["timestamp"]: row["close"]
-            for _, row in price_data.iterrows()
-        }
+        impacts: List[NewsImpact] = []
+        price_dict = {int(row["timestamp"]): float(row["close"]) for _, row in price_data.iterrows()}
         timestamps = sorted(price_dict.keys())
+        sent_vals: List[float] = []
+        ret_1h_vals: List[float] = []
+        ret_4h_vals: List[float] = []
+        ret_24h_vals: List[float] = []
+        event_impact_map: Dict[str, List[float]] = defaultdict(list)
         
         for news in news_list:
-            news_time = news.get("timestamp", 0)
-            sentiment_analysis = news.get("sentiment_analysis", {})
-            sentiment_score = sentiment_analysis.get("sentiment_score", 0)
+            news_time = int(news.get("timestamp") or self._parse_timestamp(news.get("published_at", "")))
+            sentiment_analysis = (
+                news.get("enhanced_sentiment")
+                or news.get("sentiment_analysis")
+                or {}
+            )
+            sentiment_score = float(sentiment_analysis.get("sentiment_score", 0))
+            event_tags = sentiment_analysis.get(
+                "event_tags",
+                self._extract_event_tags(news.get("title", ""))
+            )
             
             # 找到新闻发布前后的价格
             price_before = self._find_closest_price(news_time, timestamps, price_dict, direction="before")
@@ -392,49 +767,74 @@ class ComprehensiveSentimentService:
             price_after_4h = self._find_price_after(news_time, timestamps, price_dict, hours=4)
             price_after_24h = self._find_price_after(news_time, timestamps, price_dict, hours=24)
             
-            if price_before is not None and price_after_24h is not None:
-                # 计算影响分数
-                price_change_24h = (price_after_24h - price_before) / price_before
-                
-                # 情感与价格变化的一致性
-                sentiment_sign = 1 if sentiment_score > 0 else -1
-                price_sign = 1 if price_change_24h > 0 else -1
-                agreement = sentiment_sign == price_sign
-                
-                # 综合影响分数
-                impact_score = abs(price_change_24h) * (1 if agreement else -1)
-                
-                # 影响标签
-                if impact_score > 0.05:
-                    impact_label = "strong_positive"
-                elif impact_score > 0.02:
-                    impact_label = "positive"
-                elif impact_score < -0.05:
-                    impact_label = "strong_negative"
-                elif impact_score < -0.02:
-                    impact_label = "negative"
-                else:
-                    impact_label = "neutral"
-                
-                impact = NewsImpact(
-                    news_id=news.get("id", ""),
-                    published_at=news_time,
-                    sentiment_score=sentiment_score,
-                    price_before=price_before,
-                    price_after_1h=price_after_1h or price_before,
-                    price_after_4h=price_after_4h or price_before,
-                    price_after_24h=price_after_24h,
-                    impact_score=impact_score,
-                    impact_label=impact_label
-                )
-                impacts.append(impact)
+            if price_before is None or price_after_24h is None or price_before <= 0:
+                continue
+
+            price_change_1h = ((price_after_1h or price_before) - price_before) / price_before
+            price_change_4h = ((price_after_4h or price_before) - price_before) / price_before
+            price_change_24h = (price_after_24h - price_before) / price_before
+
+            agreement = (
+                np.sign(sentiment_score) == np.sign(price_change_24h)
+                if sentiment_score != 0
+                else True
+            )
+            impact_score = (
+                abs(price_change_24h)
+                * (1 if agreement else -1)
+                * (0.5 + min(abs(sentiment_score), 1.0) * 0.5)
+            )
+            
+            if impact_score > 0.03:
+                impact_label = "strong_positive"
+            elif impact_score > 0.01:
+                impact_label = "positive"
+            elif impact_score < -0.03:
+                impact_label = "strong_negative"
+            elif impact_score < -0.01:
+                impact_label = "negative"
+            else:
+                impact_label = "neutral"
+            
+            impact = NewsImpact(
+                news_id=str(news.get("id", "")),
+                published_at=news_time,
+                sentiment_score=sentiment_score,
+                price_before=float(price_before),
+                price_after_1h=float(price_after_1h or price_before),
+                price_after_4h=float(price_after_4h or price_before),
+                price_after_24h=float(price_after_24h),
+                impact_score=float(impact_score),
+                impact_label=impact_label,
+                event_tags=event_tags
+            )
+            impacts.append(impact)
+
+            sent_vals.append(sentiment_score)
+            ret_1h_vals.append(price_change_1h)
+            ret_4h_vals.append(price_change_4h)
+            ret_24h_vals.append(price_change_24h)
+            for evt in event_tags:
+                event_impact_map[evt].append(price_change_24h)
         
         # 统计分析
         if impacts:
-            avg_impact = np.mean([i.impact_score for i in impacts])
+            avg_impact = float(np.mean([i.impact_score for i in impacts]))
             pos_impacts = sum(1 for i in impacts if i.impact_score > 0)
             neg_impacts = sum(1 for i in impacts if i.impact_score < 0)
-            agreement_rate = sum(1 for i in impacts if i.impact_label in ["positive", "strong_positive"]) / len(impacts)
+            agreement_rate = float(
+                np.mean(
+                    [
+                        1
+                        if (
+                            np.sign(i.sentiment_score)
+                            == np.sign((i.price_after_24h - i.price_before) / i.price_before)
+                        ) or i.sentiment_score == 0
+                        else 0
+                        for i in impacts
+                    ]
+                )
+            )
             
             # 按影响排序
             top_impact_news = sorted(impacts, key=lambda x: abs(x.impact_score), reverse=True)[:10]
@@ -449,16 +849,32 @@ class ComprehensiveSentimentService:
             "symbol": symbol,
             "total_news_analyzed": len(news_list),
             "total_impacts_calculated": len(impacts),
-            "average_impact_score": float(avg_impact),
+            "average_impact_score": avg_impact,
             "positive_impacts": pos_impacts,
             "negative_impacts": neg_impacts,
-            "agreement_rate": float(agreement_rate),
+            "agreement_rate": agreement_rate,
+            "lag_correlations": {
+                "1h": self._safe_corr(sent_vals, ret_1h_vals),
+                "4h": self._safe_corr(sent_vals, ret_4h_vals),
+                "24h": self._safe_corr(sent_vals, ret_24h_vals),
+            },
+            "impact_by_event": {
+                evt: {
+                    "count": len(vals),
+                    "avg_return_24h": float(np.mean(vals)),
+                    "hit_rate": float(np.mean([1 if v > 0 else 0 for v in vals])),
+                }
+                for evt, vals in event_impact_map.items()
+            },
             "top_impact_news": [
                 {
                     "news_id": i.news_id,
                     "impact_score": float(i.impact_score),
                     "impact_label": i.impact_label,
                     "sentiment_score": float(i.sentiment_score),
+                    "price_change_1h": float((i.price_after_1h - i.price_before) / i.price_before),
+                    "price_change_4h": float((i.price_after_4h - i.price_before) / i.price_before),
+                    "event_tags": i.event_tags,
                     "price_change_24h": float((i.price_after_24h - i.price_before) / i.price_before)
                 }
                 for i in top_impact_news
@@ -471,7 +887,7 @@ class ComprehensiveSentimentService:
         text = text.lower()
         
         # 移除特殊字符
-        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'[^\w\s\u4e00-\u9fff-]', ' ', text)
         
         # 分词
         words = text.split()
@@ -496,6 +912,190 @@ class ComprehensiveSentimentService:
                     entities[entity_type].append(keyword)
         
         return dict(entities)
+
+    def _extract_event_tags(self, text: str) -> List[str]:
+        """提取事件标签"""
+        text_lower = text.lower()
+        tags = []
+        for tag, keywords in self.event_keywords.items():
+            if any(keyword in text_lower for keyword in keywords):
+                tags.append(tag)
+        return tags
+
+    def _safe_corr(self, x: List[float], y: List[float]) -> float:
+        """安全计算相关系数"""
+        if len(x) < 4 or len(y) < 4:
+            return 0.0
+        if np.std(x) < 1e-10 or np.std(y) < 1e-10:
+            return 0.0
+        return float(np.corrcoef(x, y)[0][1])
+
+    def _extract_base_asset(self, symbol: str) -> str:
+        """从交易对提取基础币种"""
+        sym = symbol.upper().replace("-", "").replace("_", "")
+        for suffix in ("USDT", "BUSD", "USDC", "USD", "BTC", "ETH"):
+            if sym.endswith(suffix) and len(sym) > len(suffix):
+                return sym[:-len(suffix)]
+        return sym
+
+    def _is_relevant_news(self, text: str, aliases: List[str], asset: str) -> bool:
+        """新闻相关性过滤"""
+        if any(alias in text for alias in aliases):
+            return True
+        if asset in {"BTC", "ETH"} and any(
+            key in text
+            for key in ("crypto", "bitcoin", "ethereum", "etf", "sec", "regulation", "exchange")
+        ):
+            return True
+        return False
+
+    def _source_weight(self, source: str) -> float:
+        """新闻源权重"""
+        source_lower = source.lower()
+        for key, weight in self.source_weights.items():
+            if key in source_lower:
+                return weight
+        return self.source_weights["unknown"]
+
+    def _normalize_title(self, title: str) -> str:
+        """标题归一化用于去重"""
+        return re.sub(
+            r"\s+",
+            " ",
+            re.sub(r"[^\w\s\u4e00-\u9fff]", "", title.lower())
+        ).strip()
+
+    def _safe_tag_text(self, item: Any, tag_name: str) -> str:
+        """安全读取 XML tag"""
+        tag = item.find(tag_name)
+        if tag is None:
+            return ""
+        text = getattr(tag, "text", "")
+        return text.strip() if text else ""
+
+    def _parse_feed_entries(self, content: str) -> List[Dict[str, str]]:
+        """解析 RSS/Atom，优先 bs4，失败回退到 ElementTree。"""
+        entries: List[Dict[str, str]] = []
+        if not content:
+            return entries
+
+        if HAS_BS4:
+            try:
+                soup = BeautifulSoup(content, "xml")
+                items = soup.find_all("item") or soup.find_all("entry")
+                for item in items:
+                    title = self._safe_tag_text(item, "title")
+                    description = (
+                        self._safe_tag_text(item, "description")
+                        or self._safe_tag_text(item, "summary")
+                        or self._safe_tag_text(item, "content")
+                    )
+                    link_tag = item.find("link")
+                    if link_tag is None:
+                        link = ""
+                    elif link_tag.get("href"):
+                        link = link_tag.get("href")
+                    else:
+                        link = link_tag.text.strip() if link_tag.text else ""
+                    published = (
+                        self._safe_tag_text(item, "pubDate")
+                        or self._safe_tag_text(item, "published")
+                        or self._safe_tag_text(item, "updated")
+                    )
+                    entries.append(
+                        {
+                            "title": title,
+                            "description": description,
+                            "link": link,
+                            "published": published,
+                        }
+                    )
+                if entries:
+                    return entries
+            except Exception:
+                pass
+
+        try:
+            root = ET.fromstring(content)
+        except Exception:
+            return entries
+
+        def _strip_ns(tag: str) -> str:
+            return tag.split("}", 1)[-1] if "}" in tag else tag
+
+        nodes = []
+        for el in root.iter():
+            tag = _strip_ns(el.tag).lower()
+            if tag in {"item", "entry"}:
+                nodes.append(el)
+
+        for node in nodes:
+            data = {"title": "", "description": "", "link": "", "published": ""}
+            for child in node:
+                tag = _strip_ns(child.tag).lower()
+                text = (child.text or "").strip()
+                if tag == "title":
+                    data["title"] = text
+                elif tag in {"description", "summary", "content"} and not data["description"]:
+                    data["description"] = text
+                elif tag in {"pubdate", "published", "updated"} and not data["published"]:
+                    data["published"] = text
+                elif tag == "link":
+                    data["link"] = child.attrib.get("href", "") or text
+            entries.append(data)
+
+        return entries
+
+    def _parse_timestamp(self, date_str: str) -> int:
+        """将日期文本解析为毫秒时间戳"""
+        if not date_str:
+            return int(datetime.now(timezone.utc).timestamp() * 1000)
+        date_str = str(date_str).strip()
+        try:
+            dt = parsedate_to_datetime(date_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+        try:
+            normalized = date_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def _generate_fallback_news(self, symbol: str, count: int = 12) -> List[Dict[str, Any]]:
+        """新闻源不可用时的降级新闻"""
+        base_asset = self._extract_base_asset(symbol)
+        templates = [
+            f"{base_asset} funding rate turns positive as traders position for rebound",
+            f"Analysts debate whether {base_asset} is entering a new accumulation range",
+            f"Whale transfer activity increases for {base_asset} amid volatility spike",
+            f"Regulatory headlines create mixed sentiment for {base_asset} market",
+            f"{base_asset} derivatives open interest expands while spot demand remains stable",
+            f"On-chain metrics suggest long-term holders are adding {base_asset}",
+        ]
+        now = datetime.now(timezone.utc)
+        news = []
+        for idx in range(count):
+            ts = int((now - timedelta(hours=idx * 3)).timestamp() * 1000)
+            title = templates[idx % len(templates)]
+            news.append(
+                {
+                    "id": f"fallback_{base_asset.lower()}_{idx}",
+                    "title": title,
+                    "content": title,
+                    "source": "FallbackFeed",
+                    "url": "",
+                    "timestamp": ts,
+                    "published_at": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
+                    "symbol": symbol,
+                }
+            )
+        return news
     
     def _find_closest_price(
         self,
