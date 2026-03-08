@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit",
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore"
   },
   "dependencies": {
     "vue": "^3.4.0",
@@ -16,12 +18,14 @@
     "@element-plus/icons-vue": "^2.3.0",
     "axios": "^1.6.0",
     "lightweight-charts": "^4.1.0",
-    "dayjs": "^1.11.0"
+    "dayjs": "^1.11.0",
+    "nprogress": "^0.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
     "typescript": "5.3.3",
     "vite": "^5.0.0",
-    "vue-tsc": "^2.2.0"
+    "vue-tsc": "^2.2.0",
+    "@types/nprogress": "^0.2.3"
   }
 }

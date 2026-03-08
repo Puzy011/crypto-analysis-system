@@ -83,7 +83,8 @@
         </el-menu>
       </div>
       <div class="header-right">
-        <el-tag type="success">增强版</el-tag>
+        <ThemeToggle />
+        <el-tag type="success" style="margin-left: 12px;">增强版</el-tag>
       </div>
     </el-header>
     
@@ -238,6 +239,7 @@ import {
   TrendCharts, Star, Bell, MagicStick, View, ChatLineSquare, 
   DataLine, Refresh, HomeFilled, Grid 
 } from '@element-plus/icons-vue'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -272,17 +274,20 @@ const handleMoreMenuSelect = (index: string) => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background-color: #f5f7fa;
+  background: linear-gradient(to bottom, #f5f7fa 0%, #e8eef5 100%);
 }
 
 .app-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background-color: #fff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
   padding: 0 20px;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 1000;
 }
 
 .header-left {
@@ -295,7 +300,13 @@ const handleMoreMenuSelect = (index: string) => {
 .header-left h1 {
   font-size: 20px;
   margin: 0;
-  color: #303133;
+  color: #ffffff;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.header-left .el-icon {
+  color: #ffffff !important;
 }
 
 .header-center {
@@ -309,16 +320,36 @@ const handleMoreMenuSelect = (index: string) => {
 .header-center :deep(.el-menu) {
   border-bottom: none;
   flex: 1;
+  background: transparent;
 }
 
 .header-center :deep(.el-menu-item),
 .header-center :deep(.el-sub-menu__title) {
   padding: 0 15px;
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom: 3px solid transparent;
+}
+
+.header-center :deep(.el-menu-item:hover),
+.header-center :deep(.el-sub-menu__title:hover) {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff;
+}
+
+.header-center :deep(.el-menu-item.is-active) {
+  background-color: rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff;
+  border-bottom-color: #ffffff;
 }
 
 .header-center :deep(.el-menu-item .el-icon),
 .header-center :deep(.el-sub-menu__title .el-icon) {
   margin-right: 5px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.header-center :deep(.el-sub-menu__icon-arrow) {
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .header-right {
@@ -326,6 +357,12 @@ const handleMoreMenuSelect = (index: string) => {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+}
+
+.header-right .el-tag {
+  font-weight: 600;
+  border: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .app-main {
