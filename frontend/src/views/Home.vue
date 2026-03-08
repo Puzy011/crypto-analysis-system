@@ -220,7 +220,6 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { 
   TrendCharts, MagicStick, View, ChatLineSquare, Star, Bell,
@@ -228,7 +227,6 @@ import {
   Setting, InfoFilled, Refresh
 } from '@element-plus/icons-vue'
 
-const router = useRouter()
 const backendHealth = ref(false)
 const lastCheckTime = ref('')
 const checking = ref(false)

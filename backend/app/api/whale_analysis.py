@@ -10,11 +10,13 @@ import pandas as pd
 from app.services.whale_analysis_service import (
     get_whale_analysis_service
 )
+from app.services.onchain_whale_service import get_onchain_whale_service
 from app.services.binance_service import BinanceService
 
 
 router = APIRouter(prefix="/api/whale-analysis", tags=["巨鲸分析"])
 binance_service = BinanceService()
+onchain_service = get_onchain_whale_service()
 
 
 async def _get_kline_df(symbol: str, interval: str = "1h", limit: int = 240) -> pd.DataFrame:
@@ -71,6 +73,51 @@ def _build_derivatives_metrics(
     }
 
 
+async def _get_onchain_metrics_safe(symbol: str, trade_type: str):
+    """链上指标容错获取，避免外部 RPC 异常直接中断主分析。"""
+    try:
+        return await onchain_service.get_onchain_metrics(symbol=symbol, trade_type=trade_type)
+    except Exception as exc:
+        return {
+            "symbol": symbol.upper(),
+            "trade_type": trade_type,
+            "available": False,
+            "reason": f"onchain_fetch_failed:{str(exc)[:120]}",
+            "exchange_netflow": {
+                "inflow_eth": 0.0,
+                "outflow_eth": 0.0,
+                "net_flow_eth": 0.0,
+                "direction": "neutral",
+                "direction_label": "链上数据暂不可用",
+                "large_transfer_threshold_eth": 0.0,
+                "large_transfer_count": 0,
+                "top_transfers": [],
+            },
+            "activity": {
+                "active_addresses": 0,
+                "sample_tx_count": 0,
+                "active_addresses_change_pct": 0.0,
+                "history_avg": 0.0,
+            },
+            "gas": {
+                "available": False,
+                "base_fee_gwei": 0.0,
+                "priority_fee_gwei": 0.0,
+                "anomaly_zscore": 0.0,
+                "anomaly_level": "unknown",
+            },
+            "holder_concentration": {
+                "available": False,
+                "tracked_addresses": 0,
+                "total_balance_eth": 0.0,
+                "top3_ratio": 0.0,
+                "max_single_ratio": 0.0,
+                "top_balances": [],
+            },
+            "updated_at": datetime.now().isoformat(),
+        }
+
+
 @router.get("/trade-modes")
 async def get_trade_modes():
     """获取支持的交易模式配置"""
@@ -87,6 +134,16 @@ async def get_trade_modes():
             }
         )
     return {"modes": modes, "default": "realtime"}
+
+
+@router.get("/references")
+async def get_whale_references():
+    """获取庄家分析参考文献/资料来源"""
+    whale_service = get_whale_analysis_service()
+    return {
+        "references": whale_service.get_research_references(),
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 @router.get("/large-orders/{symbol}")
@@ -178,6 +235,7 @@ async def get_full_whale_analysis(
             long_short_series,
             funding_series,
             oi_hist_series,
+            onchain_metrics,
         ) = await asyncio.gather(
             _get_kline_df(
                 symbol,
@@ -190,6 +248,7 @@ async def get_full_whale_analysis(
             binance_service.get_global_long_short_ratio(symbol, period="1h", limit=30),
             binance_service.get_funding_rate(symbol, limit=20),
             binance_service.get_open_interest_hist(symbol, period="1h", limit=30),
+            _get_onchain_metrics_safe(symbol=symbol, trade_type=profile["trade_type"]),
         )
         derivatives = _build_derivatives_metrics(
             open_interest_data,
@@ -220,6 +279,17 @@ async def get_full_whale_analysis(
             derivatives=derivatives,
             trade_type=profile["trade_type"],
         )
+        indicator_matrix = whale_service.build_whale_indicator_matrix(
+            symbol=symbol,
+            klines=df,
+            large_orders=large_orders,
+            order_flow=order_flow,
+            order_book=order_book,
+            trades=agg_trades,
+            derivatives=derivatives,
+            onchain_metrics=onchain_metrics,
+            trade_type=profile["trade_type"],
+        )
         aice_summary = whale_service.build_aice_style_summary(
             symbol=symbol,
             klines=df,
@@ -227,6 +297,7 @@ async def get_full_whale_analysis(
             order_flow=order_flow,
             phase_data=phase,
             derivatives=derivatives,
+            indicator_matrix=indicator_matrix,
             trade_type=profile["trade_type"],
         )
         
@@ -269,6 +340,12 @@ async def get_full_whale_analysis(
         if phase.get("phase") in ["pump", "accumulation"]:
             bullish_signals += 1
         elif phase.get("phase") in ["distribution", "washout"]:
+            bearish_signals += 1
+
+        matrix_score = float((indicator_matrix.get("summary", {}) or {}).get("smart_money_score", 0.0) or 0.0)
+        if matrix_score > 20:
+            bullish_signals += 1
+        elif matrix_score < -20:
             bearish_signals += 1
         
         if bullish_signals > bearish_signals + 1:
@@ -316,8 +393,11 @@ async def get_full_whale_analysis(
             "extreme_30day": aice_summary.get("extreme_30day", []),
             "smart_money": smart_money,
             "smart_money_full": True,
+            "indicator_matrix": indicator_matrix,
             "derivatives": derivatives,
+            "onchain_metrics": onchain_metrics,
             "data_quality": data_quality,
+            "references": whale_service.get_research_references(),
             "entry_price": aice_summary.get("entry_price"),
             "stop_loss": aice_summary.get("stop_loss"),
             "take_profit": aice_summary.get("take_profit"),
@@ -351,6 +431,7 @@ async def get_whale_alerts_api(
             long_short_series,
             funding_series,
             oi_hist_series,
+            onchain_metrics,
         ) = await asyncio.gather(
             _get_kline_df(symbol, interval=profile["interval"], limit=int(profile["limit"])),
             binance_service.get_agg_trades(symbol, limit=1000),
@@ -359,6 +440,7 @@ async def get_whale_alerts_api(
             binance_service.get_global_long_short_ratio(symbol, period="1h", limit=30),
             binance_service.get_funding_rate(symbol, limit=20),
             binance_service.get_open_interest_hist(symbol, period="1h", limit=30),
+            _get_onchain_metrics_safe(symbol=symbol, trade_type=profile["trade_type"]),
         )
         derivatives = _build_derivatives_metrics(
             open_interest_data,
@@ -381,6 +463,17 @@ async def get_whale_alerts_api(
             trade_type=profile["trade_type"]
         )
         phase = whale_service.detect_manipulation_phase(symbol, df, trade_type=profile["trade_type"])
+        indicator_matrix = whale_service.build_whale_indicator_matrix(
+            symbol=symbol,
+            klines=df,
+            large_orders=large_orders,
+            order_flow=order_flow,
+            order_book=order_book,
+            trades=agg_trades,
+            derivatives=derivatives,
+            onchain_metrics=onchain_metrics,
+            trade_type=profile["trade_type"],
+        )
         
         # 获取预警
         alerts = whale_service.get_whale_alerts(
@@ -397,6 +490,8 @@ async def get_whale_alerts_api(
             "trade_type": profile["trade_type"],
             "trade_type_label": profile["label"],
             "derivatives": derivatives,
+            "onchain_metrics": onchain_metrics,
+            "indicator_matrix": indicator_matrix,
             "alerts": alerts,
             "alert_count": len(alerts),
             "timestamp": datetime.now().isoformat()

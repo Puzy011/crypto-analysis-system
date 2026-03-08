@@ -11,11 +11,12 @@
         <div class="control-item">
           <span class="control-label">交易对</span>
           <el-select v-model="selectedSymbol" filterable style="width: 220px;">
-            <el-option label="BTC/USDT" value="BTCUSDT" />
-            <el-option label="ETH/USDT" value="ETHUSDT" />
-            <el-option label="BNB/USDT" value="BNBUSDT" />
-            <el-option label="SOL/USDT" value="SOLUSDT" />
-            <el-option label="XRP/USDT" value="XRPUSDT" />
+            <el-option
+              v-for="item in symbolOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
         </div>
         <div class="control-item">
@@ -132,6 +133,115 @@
             {{ ((whaleAnalysis.derivatives.open_interest_change_pct || 0) * 100).toFixed(2) }}%
           </strong>
         </div>
+      </div>
+    </div>
+
+    <!-- 庄家指标矩阵 -->
+    <div class="card" v-if="indicatorMatrix">
+      <h3>🧠 庄家指标矩阵</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>SmartMoney 得分</span>
+          <strong :class="(indicatorMatrix.summary?.smart_money_score || 0) >= 0 ? 'positive' : 'negative'">
+            {{ (indicatorMatrix.summary?.smart_money_score || 0).toFixed(1) }}
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>方向</span>
+          <strong>{{ indicatorMatrix.summary?.direction_label || '中性' }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>交易所净流代理</span>
+          <strong :class="(indicatorMatrix.onchain_proxies?.exchange_net_flow_usd || 0) >= 0 ? 'positive' : 'negative'">
+            {{ (indicatorMatrix.onchain_proxies?.exchange_net_flow_usd || 0).toFixed(0) }}
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>大额交易数</span>
+          <strong>{{ indicatorMatrix.onchain_proxies?.large_transaction_count || 0 }}</strong>
+        </div>
+      </div>
+
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>筹码集中度代理</span>
+          <strong>{{ ((indicatorMatrix.onchain_proxies?.concentration_ratio_proxy || 0) * 100).toFixed(1) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>订单簿失衡</span>
+          <strong :class="(indicatorMatrix.microstructure?.combined_imbalance || 0) >= 0 ? 'positive' : 'negative'">
+            {{ (indicatorMatrix.microstructure?.combined_imbalance || 0).toFixed(3) }}
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>虚假挂单风险代理</span>
+          <strong>{{ ((indicatorMatrix.microstructure?.spoofing_risk_proxy || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>活跃-价格背离</span>
+          <strong :class="indicatorMatrix.onchain_proxies?.activity_price_divergence?.is_bearish_divergence ? 'negative' : 'positive'">
+            {{ indicatorMatrix.onchain_proxies?.activity_price_divergence?.is_bearish_divergence ? '是' : '否' }}
+          </strong>
+        </div>
+      </div>
+
+      <div class="signal-points" v-if="indicatorMatrix.method_notes?.length">
+        <div v-for="(note, idx) in indicatorMatrix.method_notes" :key="idx" class="signal-point">
+          {{ note }}
+        </div>
+      </div>
+    </div>
+
+    <!-- 链上真实指标 -->
+    <div class="card" v-if="onchainReal">
+      <h3>⛓️ 链上真实指标</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>交易所净流(ETH)</span>
+          <strong :class="(onchainReal.exchange_netflow?.net_flow_eth || 0) <= 0 ? 'positive' : 'negative'">
+            {{ Number(onchainReal.exchange_netflow?.net_flow_eth || 0).toFixed(2) }}
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>净流方向</span>
+          <strong>{{ onchainReal.exchange_netflow?.direction_label || '暂无' }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>活跃地址变化</span>
+          <strong :class="(onchainReal.activity?.active_addresses_change_pct || 0) >= 0 ? 'positive' : 'negative'">
+            {{ Number((onchainReal.activity?.active_addresses_change_pct || 0) * 100).toFixed(2) }}%
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>活跃地址数</span>
+          <strong>{{ onchainReal.activity?.active_addresses || 0 }}</strong>
+        </div>
+      </div>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>Gas 异常 Z</span>
+          <strong :class="(onchainReal.gas?.anomaly_zscore || 0) > 1.5 ? 'negative' : 'positive'">
+            {{ Number(onchainReal.gas?.anomaly_zscore || 0).toFixed(2) }}
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>Gas 级别</span>
+          <strong>{{ onchainReal.gas?.anomaly_level || 'unknown' }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>Top3 持仓集中度</span>
+          <strong :class="(onchainReal.holder_concentration?.top3_ratio || 0) > 0.72 ? 'negative' : 'positive'">
+            {{ Number((onchainReal.holder_concentration?.top3_ratio || 0) * 100).toFixed(2) }}%
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>监控地址总余额</span>
+          <strong>{{ Number(onchainReal.holder_concentration?.total_balance_eth || 0).toFixed(2) }} ETH</strong>
+        </div>
+      </div>
+      <div class="signal-points">
+        <div class="signal-point">样本区块: {{ onchainMetricsSample }}</div>
+        <div class="signal-point">数据状态: {{ onchainReal.available ? '可用' : '暂不可用' }}</div>
       </div>
     </div>
 
@@ -342,6 +452,25 @@
         </div>
       </div>
     </div>
+
+    <!-- 参考文献 -->
+    <div class="card" v-if="references.length > 0">
+      <h3>📚 参考文献</h3>
+      <div class="ref-list">
+        <div v-for="refItem in references" :key="refItem.id" class="ref-item">
+          <a :href="refItem.url" target="_blank" rel="noopener noreferrer" class="ref-title">
+            {{ refItem.title }}
+          </a>
+          <div class="ref-meta">
+            <span class="ref-tag">{{ refItem.category }}</span>
+            <span class="ref-note">{{ refItem.note }}</span>
+          </div>
+          <div class="ref-features" v-if="refItem.applied_features?.length">
+            适用模块: {{ refItem.applied_features.join(', ') }}
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -351,6 +480,13 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 type TradeType = 'realtime' | 'intraday' | 'longterm'
 
 const selectedSymbol = ref('BTCUSDT')
+const symbolOptions = ref<Array<{ label: string; value: string }>>([
+  { label: 'BTC/USDT', value: 'BTCUSDT' },
+  { label: 'ETH/USDT', value: 'ETHUSDT' },
+  { label: 'BNB/USDT', value: 'BNBUSDT' },
+  { label: 'SOL/USDT', value: 'SOLUSDT' },
+  { label: 'XRP/USDT', value: 'XRPUSDT' }
+])
 const tradeType = ref<TradeType>('realtime')
 const whaleAnalysis = ref<any>(null)
 const largeOrders = ref<any>(null)
@@ -359,9 +495,32 @@ const manipulationPhase = ref<any>(null)
 const whaleAlerts = ref<any[]>([])
 const smartMoney = ref<any>(null)
 const signalExplanation = ref<string[]>([])
+const indicatorMatrix = ref<any>(null)
+const references = ref<any[]>([])
 let refreshTimer: number | null = null
 
 const apiBase = '/api'
+
+const onchainReal = computed(() => {
+  const fromMatrix = indicatorMatrix.value?.onchain_real
+  if (fromMatrix && typeof fromMatrix === 'object') {
+    return fromMatrix
+  }
+  const fromTop = whaleAnalysis.value?.onchain_metrics
+  if (fromTop && typeof fromTop === 'object') {
+    return fromTop
+  }
+  return null
+})
+
+const onchainMetricsSample = computed(() => {
+  const sample = whaleAnalysis.value?.onchain_metrics?.sample
+  if (!sample) return '暂无'
+  const start = sample.start_block ?? '-'
+  const end = sample.end_block ?? '-'
+  const count = sample.block_count ?? 0
+  return `${start} - ${end} (${count} blocks)`
+})
 
 const tradeTypeLabel = computed(() => {
   if (tradeType.value === 'realtime') return '实时短线'
@@ -390,6 +549,9 @@ const fetchWhaleAnalysis = async () => {
     const response = await fetch(
       `${apiBase}/whale-analysis/full/${selectedSymbol.value}?trade_type=${tradeType.value}`
     )
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
     whaleAnalysis.value = await response.json()
     largeOrders.value = whaleAnalysis.value.large_orders
     orderFlow.value = whaleAnalysis.value.order_flow
@@ -397,8 +559,49 @@ const fetchWhaleAnalysis = async () => {
     whaleAlerts.value = whaleAnalysis.value.alerts || []
     smartMoney.value = whaleAnalysis.value.smart_money || null
     signalExplanation.value = whaleAnalysis.value.signal_explanation || []
+    indicatorMatrix.value = whaleAnalysis.value.indicator_matrix || null
+    if (Array.isArray(whaleAnalysis.value.references)) {
+      references.value = whaleAnalysis.value.references
+    }
   } catch (error) {
     console.error('获取巨鲸分析失败:', error)
+  }
+}
+
+const fetchSymbolOptions = async () => {
+  try {
+    const response = await fetch('/api/market/symbols?quote_asset=USDT&limit=120')
+    if (!response.ok) return
+    const data = await response.json()
+    const rows = Array.isArray(data?.data) ? data.data : []
+    if (!rows.length) return
+    symbolOptions.value = rows.map((row: any) => {
+      const symbol = String(row.symbol || '')
+      if (symbol.endsWith('USDT')) {
+        return {
+          value: symbol,
+          label: `${symbol.slice(0, -4)}/USDT`
+        }
+      }
+      return { value: symbol, label: symbol }
+    })
+    const exists = symbolOptions.value.some(item => item.value === selectedSymbol.value)
+    if (!exists && symbolOptions.value.length > 0) {
+      selectedSymbol.value = symbolOptions.value[0].value
+    }
+  } catch (error) {
+    console.error('获取交易对列表失败:', error)
+  }
+}
+
+const fetchReferences = async () => {
+  try {
+    const response = await fetch(`${apiBase}/whale-analysis/references`)
+    if (!response.ok) return
+    const data = await response.json()
+    references.value = data.references || []
+  } catch (error) {
+    console.error('获取参考文献失败:', error)
   }
 }
 
@@ -425,6 +628,8 @@ watch([selectedSymbol, tradeType], async () => {
 })
 
 onMounted(async () => {
+  await fetchSymbolOptions()
+  await fetchReferences()
   await refreshAll()
   startAutoRefresh()
 })
@@ -621,6 +826,14 @@ onUnmounted(() => {
 .smart-item strong {
   color: #111827;
   font-size: 16px;
+}
+
+.smart-item strong.positive {
+  color: #10b981;
+}
+
+.smart-item strong.negative {
+  color: #ef4444;
 }
 
 .smart-item.buy-bg {
@@ -948,6 +1161,56 @@ onUnmounted(() => {
 .alert-suggestion {
   color: #667eea;
   font-size: 13px;
+}
+
+.ref-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ref-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.ref-title {
+  color: #1d4ed8;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ref-title:hover {
+  text-decoration: underline;
+}
+
+.ref-meta {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ref-tag {
+  font-size: 11px;
+  color: #4b5563;
+  background: #e5e7eb;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.ref-note {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.ref-features {
+  margin-top: 6px;
+  color: #374151;
+  font-size: 12px;
 }
 
 @media (max-width: 768px) {

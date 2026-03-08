@@ -128,6 +128,94 @@ class WhaleAnalysisService:
             },
         }
 
+        # 研究参考文献（用于前端展示“参看文献”与可追溯性）
+        self.research_references: List[Dict[str, Any]] = [
+            {
+                "id": "fin-ethers",
+                "title": "Ethers.js 官方文档",
+                "url": "https://docs.ethers.org/",
+                "category": "data-ingestion",
+                "applied_features": ["address_monitoring", "tx_decoding"],
+                "note": "用于链上地址监听与交易解析的基础库。"
+            },
+            {
+                "id": "fin-web3py",
+                "title": "Web3.py 官方文档",
+                "url": "https://web3py.readthedocs.io/",
+                "category": "data-ingestion",
+                "applied_features": ["onchain_query", "event_logs"],
+                "note": "用于 Python 侧链上数据抓取与合约事件解析。"
+            },
+            {
+                "id": "fin-ccxt",
+                "title": "CCXT 项目",
+                "url": "https://github.com/ccxt/ccxt",
+                "category": "market-data",
+                "applied_features": ["exchange_flow", "multi_exchange_extension"],
+                "note": "统一交易所市场数据接口，适合扩展多交易所净流。"
+            },
+            {
+                "id": "fin-freqtrade",
+                "title": "Freqtrade 项目",
+                "url": "https://github.com/freqtrade/freqtrade",
+                "category": "quant-framework",
+                "applied_features": ["volume_profile", "strategy_validation"],
+                "note": "量化框架中常用成交量分布、回测验证思路。"
+            },
+            {
+                "id": "fin-binance-api",
+                "title": "Binance Spot API Docs",
+                "url": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api",
+                "category": "market-data",
+                "applied_features": ["order_book_imbalance", "large_trade_count"],
+                "note": "当前系统订单簿与聚合成交数据的主要来源。"
+            },
+            {
+                "id": "fin-binance-futures",
+                "title": "Binance Futures API Docs",
+                "url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api",
+                "category": "derivatives",
+                "applied_features": ["funding_rate", "open_interest", "long_short_ratio"],
+                "note": "合约偏离指标来源。"
+            },
+            {
+                "id": "fin-dune",
+                "title": "Dune Docs",
+                "url": "https://docs.dune.com/",
+                "category": "onchain-analytics",
+                "applied_features": ["holder_concentration", "exchange_netflow_extension"],
+                "note": "后续链上持仓集中度与净流SQL分析可参考。"
+            },
+            {
+                "id": "fin-the-graph",
+                "title": "The Graph Docs",
+                "url": "https://thegraph.com/docs/",
+                "category": "onchain-analytics",
+                "applied_features": ["subgraph_indexing", "smart_money_list"],
+                "note": "用于按地址标签索引聪明钱与持仓变化。"
+            },
+            {
+                "id": "fin-ethereum-jsonrpc",
+                "title": "Ethereum JSON-RPC Spec",
+                "url": "https://ethereum.org/en/developers/docs/apis/json-rpc/",
+                "category": "onchain-data",
+                "applied_features": ["exchange_wallet_flow", "gas_anomaly", "active_address_monitor"],
+                "note": "本系统链上真实指标直接基于公开 JSON-RPC 拉取。"
+            },
+            {
+                "id": "fin-llamarpc",
+                "title": "LlamaNodes Public RPC",
+                "url": "https://eth.llamarpc.com",
+                "category": "onchain-data",
+                "applied_features": ["eth_block_sampling", "fee_history", "address_balance"],
+                "note": "公开 RPC 入口之一，用于链上采样。"
+            },
+        ]
+
+    def get_research_references(self) -> List[Dict[str, Any]]:
+        """返回庄家分析参考文献列表（前端可直接展示）"""
+        return [dict(item) for item in self.research_references]
+
     def get_trade_profile(self, trade_type: Optional[str] = "realtime") -> Dict[str, Any]:
         """获取交易模式配置，未知模式回退 realtime。"""
         mode = (trade_type or "realtime").lower()
@@ -661,6 +749,300 @@ class WhaleAnalysisService:
             "analyzed_at": datetime.now().isoformat()
         }
 
+    def _build_volume_profile_metrics(
+        self,
+        klines: pd.DataFrame,
+        bins: int = 24
+    ) -> Dict[str, Any]:
+        """构建简化版 Volume Profile 指标（POC / Value Area）。"""
+        if klines is None or klines.empty:
+            return {
+                "poc_price": 0.0,
+                "value_area_low": 0.0,
+                "value_area_high": 0.0,
+                "top5_bin_concentration": 0.0,
+                "available": False,
+            }
+
+        df = klines.copy()
+        for col in ["high", "low", "close", "volume"]:
+            if col not in df.columns:
+                return {
+                    "poc_price": 0.0,
+                    "value_area_low": 0.0,
+                    "value_area_high": 0.0,
+                    "top5_bin_concentration": 0.0,
+                    "available": False,
+                }
+
+        typical_price = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
+        if "quoteVolume" in df.columns:
+            weights = np.maximum(df["quoteVolume"].astype(float).values, 1e-8)
+        else:
+            weights = np.maximum((df["close"].astype(float) * df["volume"].astype(float)).values, 1e-8)
+
+        prices = typical_price.values
+        if len(prices) < 10 or np.max(prices) <= 0:
+            return {
+                "poc_price": 0.0,
+                "value_area_low": 0.0,
+                "value_area_high": 0.0,
+                "top5_bin_concentration": 0.0,
+                "available": False,
+            }
+
+        hist, edges = np.histogram(prices, bins=max(10, bins), weights=weights)
+        total_hist = float(np.sum(hist))
+        if total_hist <= 0:
+            return {
+                "poc_price": 0.0,
+                "value_area_low": 0.0,
+                "value_area_high": 0.0,
+                "top5_bin_concentration": 0.0,
+                "available": False,
+            }
+
+        poc_idx = int(np.argmax(hist))
+        poc_price = float((edges[poc_idx] + edges[poc_idx + 1]) / 2.0)
+
+        # 近似 Value Area：加权分位数 15%~85%
+        sorter = np.argsort(prices)
+        sorted_prices = prices[sorter]
+        sorted_weights = weights[sorter]
+        cumulative = np.cumsum(sorted_weights) / (np.sum(sorted_weights) + 1e-8)
+        value_area_low = float(sorted_prices[np.searchsorted(cumulative, 0.15, side="left")])
+        value_area_high = float(sorted_prices[np.searchsorted(cumulative, 0.85, side="left")])
+
+        top5_bin_concentration = float(np.sum(np.sort(hist)[-5:]) / total_hist)
+        return {
+            "poc_price": poc_price,
+            "value_area_low": value_area_low,
+            "value_area_high": value_area_high,
+            "top5_bin_concentration": top5_bin_concentration,
+            "available": True,
+        }
+
+    def build_whale_indicator_matrix(
+        self,
+        symbol: str,
+        klines: pd.DataFrame,
+        large_orders: Dict[str, Any],
+        order_flow: Dict[str, Any],
+        order_book: Dict[str, Any] = None,
+        trades: List[Dict[str, Any]] = None,
+        derivatives: Dict[str, Any] = None,
+        onchain_metrics: Dict[str, Any] = None,
+        trade_type: str = "realtime",
+    ) -> Dict[str, Any]:
+        """
+        构建“庄家行为指标矩阵”：
+        - 链上思路代理指标（交易所净流/大额交易/集中度/活跃度背离）
+        - 微观结构指标（订单簿失衡/成交量分布）
+        - 合约偏离指标（资金费率/OI/多空比）
+        """
+        profile = self.get_trade_profile(trade_type)
+        derivatives = derivatives or {}
+        onchain_metrics = onchain_metrics or {}
+        trades = trades or []
+        order_book = order_book or {}
+
+        price_change = 0.0
+        activity_change = 0.0
+        divergence_score = 0.0
+        bearish_divergence = False
+
+        if klines is not None and not klines.empty and len(klines) >= max(20, profile["flow_window"] * 2):
+            df = klines.copy()
+            if "trades" not in df.columns:
+                df["trades"] = np.maximum(50, (df["volume"].astype(float) * 0.6).astype(int))
+            w = int(max(8, profile["flow_window"]))
+            recent = df.tail(w)
+            previous = df.tail(w * 2).head(w)
+            if not recent.empty and not previous.empty:
+                price_now = float(recent["close"].iloc[-1])
+                price_prev = float(previous["close"].iloc[0])
+                price_change = float((price_now - price_prev) / (price_prev + 1e-8))
+                trades_recent = float(recent["trades"].astype(float).mean())
+                trades_prev = float(previous["trades"].astype(float).mean())
+                activity_change = float((trades_recent - trades_prev) / (trades_prev + 1e-8))
+                divergence_score = float(price_change - activity_change)
+                bearish_divergence = bool(price_change > 0 and activity_change < 0)
+
+        # 交易所净流代理（当前基于主动成交大单净流）
+        exchange_net_flow_usd = float(large_orders.get("net_flow", 0.0) or 0.0)
+        large_tx_count = int(large_orders.get("total_large_orders", 0) or 0)
+
+        # 大额成交集中度（Top5 大额成交金额占比）
+        large_order_values = sorted(
+            [float(o.get("value", 0.0) or 0.0) for o in large_orders.get("large_orders", []) if float(o.get("value", 0.0) or 0.0) > 0],
+            reverse=True
+        )
+        total_large_value = float(sum(large_order_values))
+        top5_large_ratio = float(sum(large_order_values[:5]) / (total_large_value + 1e-8)) if large_order_values else 0.0
+
+        bids = (order_book.get("bids", []) or [])[:20]
+        asks = (order_book.get("asks", []) or [])[:20]
+        bid_notional = [float(x.get("price", 0.0)) * float(x.get("amount", 0.0)) for x in bids]
+        ask_notional = [float(x.get("price", 0.0)) * float(x.get("amount", 0.0)) for x in asks]
+        book_total = float(sum(bid_notional) + sum(ask_notional))
+        book_top5 = float(sum(sorted(bid_notional + ask_notional, reverse=True)[:5])) if book_total > 0 else 0.0
+        orderbook_concentration = float(book_top5 / (book_total + 1e-8)) if book_total > 0 else 0.0
+
+        concentration_ratio_proxy = float(0.55 * top5_large_ratio + 0.45 * orderbook_concentration)
+
+        # 订单簿微观结构
+        spread_bps = 0.0
+        if bids and asks:
+            best_bid = float(bids[0].get("price", 0.0))
+            best_ask = float(asks[0].get("price", 0.0))
+            mid = (best_bid + best_ask) / 2.0
+            if mid > 0:
+                spread_bps = float((best_ask - best_bid) / mid * 10000)
+
+        book_imbalance = float(order_flow.get("book_imbalance", 0.0) or 0.0)
+        combined_imbalance = float(order_flow.get("combined_imbalance", order_flow.get("order_imbalance", 0.0)) or 0.0)
+
+        # 虚假挂单风险代理（仅快照，不是完整撤单频率）
+        spoofing_proxy = float(
+            min(
+                1.0,
+                max(
+                    0.0,
+                    abs(book_imbalance) * 1.35
+                    + max(0.0, orderbook_concentration - 0.42) * 1.8
+                    + max(0.0, (2.0 - min(spread_bps, 2.0))) * 0.1,
+                ),
+            )
+        )
+
+        volume_profile = self._build_volume_profile_metrics(klines, bins=26)
+
+        funding_rate = float(derivatives.get("funding_rate", 0.0) or 0.0)
+        long_short_ratio = float(derivatives.get("long_short_ratio", 0.0) or 0.0)
+        oi_change = float(derivatives.get("open_interest_change_pct", 0.0) or 0.0)
+
+        onchain_available = bool(onchain_metrics.get("available", False))
+        onchain_exchange = onchain_metrics.get("exchange_netflow", {}) or {}
+        onchain_activity = onchain_metrics.get("activity", {}) or {}
+        onchain_gas = onchain_metrics.get("gas", {}) or {}
+        onchain_concentration = onchain_metrics.get("holder_concentration", {}) or {}
+
+        bullish_score = 0.0
+        bearish_score = 0.0
+        if exchange_net_flow_usd > 0:
+            bullish_score += 1.2
+        elif exchange_net_flow_usd < 0:
+            bearish_score += 1.2
+        if combined_imbalance > profile["moderate_imbalance"]:
+            bullish_score += 1.0
+        elif combined_imbalance < -profile["moderate_imbalance"]:
+            bearish_score += 1.0
+        if funding_rate > 0.0002 and long_short_ratio > 1.35:
+            bearish_score += 0.8
+        elif funding_rate < -0.0002 and long_short_ratio < 0.9:
+            bullish_score += 0.8
+        if oi_change > 0.03 and combined_imbalance < 0:
+            bearish_score += 0.6
+        elif oi_change > 0.03 and combined_imbalance > 0:
+            bullish_score += 0.6
+        if bearish_divergence:
+            bearish_score += 0.8
+
+        # 链上真实指标加权
+        if onchain_available:
+            net_flow_eth = float(onchain_exchange.get("net_flow_eth", 0.0) or 0.0)
+            active_change = float(onchain_activity.get("active_addresses_change_pct", 0.0) or 0.0)
+            gas_z = float(onchain_gas.get("anomaly_zscore", 0.0) or 0.0)
+            concentration_top3 = float(onchain_concentration.get("top3_ratio", 0.0) or 0.0)
+
+            # 净流入交易所偏空；净流出偏多
+            if net_flow_eth > 5:
+                bearish_score += 0.9
+            elif net_flow_eth < -5:
+                bullish_score += 0.9
+
+            # 活跃地址与价格关系
+            if active_change > 0.08 and price_change > 0:
+                bullish_score += 0.5
+            if active_change < -0.08 and price_change > 0:
+                bearish_score += 0.7
+
+            # Gas 异常上升提高风险
+            if gas_z > 1.8:
+                bearish_score += 0.35
+
+            # 地址集中度过高提高风险
+            if concentration_top3 > 0.72:
+                bearish_score += 0.35
+
+        raw_score = float(bullish_score - bearish_score)
+        smart_money_score = float(np.tanh(raw_score / 2.6) * 100)
+        if smart_money_score > 25:
+            direction = "bullish"
+            direction_label = "偏多"
+        elif smart_money_score < -25:
+            direction = "bearish"
+            direction_label = "偏空"
+        else:
+            direction = "neutral"
+            direction_label = "中性"
+
+        return {
+            "symbol": symbol,
+            "trade_type": profile["trade_type"],
+            "trade_type_label": profile["label"],
+            "onchain_proxies": {
+                "exchange_net_flow_usd": exchange_net_flow_usd,
+                "large_transaction_count": large_tx_count,
+                "concentration_ratio_proxy": concentration_ratio_proxy,
+                "top5_large_order_ratio": top5_large_ratio,
+                "orderbook_concentration_ratio": orderbook_concentration,
+                "activity_price_divergence": {
+                    "price_change": price_change,
+                    "activity_change": activity_change,
+                    "divergence_score": divergence_score,
+                    "is_bearish_divergence": bearish_divergence,
+                },
+                "gas_fee_monitor": {
+                    "available": False,
+                    "reason": "当前版本基于交易所微观结构与合约数据，未接入链上Gas数据源",
+                },
+            },
+            "onchain_real": {
+                "available": onchain_available,
+                "exchange_netflow": onchain_exchange,
+                "activity": onchain_activity,
+                "gas": onchain_gas,
+                "holder_concentration": onchain_concentration,
+            },
+            "microstructure": {
+                "order_book_imbalance": book_imbalance,
+                "combined_imbalance": combined_imbalance,
+                "spread_bps": spread_bps,
+                "spoofing_risk_proxy": spoofing_proxy,
+                "volume_profile": volume_profile,
+            },
+            "derivatives_metrics": {
+                "funding_rate": funding_rate,
+                "long_short_ratio": long_short_ratio,
+                "open_interest_change_pct": oi_change,
+            },
+            "summary": {
+                "smart_money_score": smart_money_score,
+                "direction": direction,
+                "direction_label": direction_label,
+                "bullish_score": bullish_score,
+                "bearish_score": bearish_score,
+            },
+            "method_notes": [
+                "exchange_net_flow_usd 当前使用大额主动成交净流作为交易所净流代理。",
+                "concentration_ratio_proxy 为大额成交集中度与盘口深度集中度的融合估计。",
+                "spoofing_risk_proxy 为快照风险代理，不等价于完整撤单频率统计。",
+                "onchain_real 基于公开 Ethereum JSON-RPC 采样，覆盖地址净流、活跃地址、Gas 与余额集中度。",
+            ],
+            "analyzed_at": datetime.now().isoformat(),
+        }
+
     def build_smart_money_profile(
         self,
         symbol: str,
@@ -833,6 +1215,7 @@ class WhaleAnalysisService:
         order_flow: Dict[str, Any],
         phase_data: Dict[str, Any],
         derivatives: Dict[str, Any] = None,
+        indicator_matrix: Dict[str, Any] = None,
         trade_type: str = "realtime"
     ) -> Dict[str, Any]:
         """
@@ -840,6 +1223,7 @@ class WhaleAnalysisService:
         """
         profile = self.get_trade_profile(trade_type)
         derivatives = derivatives or {}
+        indicator_matrix = indicator_matrix or {}
         if klines is None or klines.empty:
             return {}
         current_price = float(klines["close"].iloc[-1])
@@ -888,6 +1272,17 @@ class WhaleAnalysisService:
             else:
                 bearish_score += 1
 
+        matrix_summary = indicator_matrix.get("summary", {}) or {}
+        matrix_score = float(matrix_summary.get("smart_money_score", 0.0) or 0.0)
+        if matrix_score > 20:
+            bullish_score += 1
+        elif matrix_score < -20:
+            bearish_score += 1
+
+        divergence_block = ((indicator_matrix.get("onchain_proxies", {}) or {}).get("activity_price_divergence", {}) or {})
+        if bool(divergence_block.get("is_bearish_divergence", False)):
+            bearish_score += 1
+
         if bullish_score >= bearish_score + 2:
             whale_direction = "多头主导"
             whale_action = "巨鲸吸筹"
@@ -912,6 +1307,14 @@ class WhaleAnalysisService:
             f"订单不平衡：{order_flow.get('combined_imbalance', order_flow.get('order_imbalance', 0)):.3f}，CVD 变化 {order_flow.get('cvd_change', 0):.2f}",
             f"合约数据：资金费率 {funding_rate*100:.4f}%，多空比 {long_short_ratio:.3f}，OI变化 {open_interest_change_pct*100:.2f}%",
         ]
+        if indicator_matrix:
+            signal_explanation.append(
+                f"指标矩阵：SmartMoney得分 {matrix_score:.1f}（{matrix_summary.get('direction_label', '中性')}）"
+            )
+            signal_explanation.append(
+                f"集中度代理 {((indicator_matrix.get('onchain_proxies', {}) or {}).get('concentration_ratio_proxy', 0.0)):.3f}"
+                f"，虚假挂单风险代理 {((indicator_matrix.get('microstructure', {}) or {}).get('spoofing_risk_proxy', 0.0)):.3f}"
+            )
 
         summary = (
             f"{symbol} 当前{whale_direction}，疑似 {whale_action}。"
