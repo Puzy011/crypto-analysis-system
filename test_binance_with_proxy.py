@@ -12,12 +12,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
 import asyncio
 import aiohttp
 
-# 设置代理
-os.environ['http_proxy'] = 'http://127.0.0.1:7890'
-os.environ['https_proxy'] = 'http://127.0.0.1:7890'
+# 可选：设置代理（如已在环境中配置可跳过）
+os.environ.setdefault('http_proxy', 'http://127.0.0.1:7890')
+os.environ.setdefault('https_proxy', 'http://127.0.0.1:7890')
 
 
 async def test_binance():
+    if os.getenv("RUN_NETWORK_TESTS", "0") not in {"1", "true", "TRUE"}:
+        print("⏭️  跳过网络测试（设置 RUN_NETWORK_TESTS=1 启用）")
+        return
     print("🔮 测试通过代理连接 Binance...")
     print()
     

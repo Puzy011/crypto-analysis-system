@@ -1,6 +1,7 @@
 import aiohttp
 import pandas as pd
 from typing import Dict, Any, List
+import os
 
 
 class OKXService:
@@ -16,6 +17,8 @@ class OKXService:
     ) -> List[Dict[str, Any]]:
         """获取K线数据"""
         url = f"{OKXService.BASE_URL}/api/v5/market/candles"
+        base_url = str(os.getenv("OKX_BASE_URL", OKXService.BASE_URL)).strip() or OKXService.BASE_URL
+        url = f"{base_url}/api/v5/market/candles"
         
         # OKX 时间周期映射
         interval_map = {
@@ -37,7 +40,7 @@ class OKXService:
             "limit": str(limit)
         }
         
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params) as response:
                 if response.status != 200:
                     raise Exception(f"OKX API error: {response.status}")

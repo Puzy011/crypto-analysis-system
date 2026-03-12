@@ -394,6 +394,120 @@ class EnhancedSentimentService:
         history = list(self.sentiment_history[symbol])
         return history[-limit:]
 
+    def analyze_full_sentiment(
+        self,
+        keyword: str,
+        news_count: int = 20
+    ) -> Dict[str, Any]:
+        """
+        全方面舆情分析（用于演示与 API）
+        返回结构与 test_all_new_features.py 对齐。
+        """
+        symbol = str(keyword or "BTC").upper()
+        news_list = self.generate_mock_news(symbol, count=news_count)
+        sentiment_index = self.calculate_sentiment_index(symbol, news_list)
+
+        # 新闻情感汇总
+        distribution = sentiment_index.get("sentiment_distribution", {}) or {}
+        sentiment_score = float(sentiment_index.get("avg_sentiment_score", 0.0) or 0.0)
+        news_sentiment = {
+            "sentiment_score": sentiment_score,
+            "news_count": len(news_list),
+            "distribution": {
+                "positive": int(distribution.get("positive", 0) or 0),
+                "negative": int(distribution.get("negative", 0) or 0),
+                "neutral": int(distribution.get("neutral", 0) or 0),
+            },
+        }
+
+        # 社交情感（模拟）
+        overall_sentiment = float(max(-1.0, min(1.0, sentiment_score + random.uniform(-0.15, 0.15))))
+        hot_topics = self._extract_topics(" ".join([n["title"] for n in news_list[:5]]))
+        social_sentiment = {
+            "overall_sentiment": overall_sentiment,
+            "hot_topics": hot_topics[:5],
+        }
+
+        # 趋势分析（基于历史恐惧贪婪指数变化）
+        history = self.get_sentiment_history(symbol, limit=6)
+        if len(history) >= 2:
+            delta = history[-1]["fear_greed"] - history[0]["fear_greed"]
+        else:
+            delta = sentiment_index.get("fear_greed_index", 50) - 50
+        if delta > 8:
+            trend_label = "升温"
+        elif delta < -8:
+            trend_label = "降温"
+        else:
+            trend_label = "平稳"
+        trend_analysis = {
+            "trend_label": trend_label,
+            "delta": float(delta),
+        }
+
+        # 热度分析（基于新闻数量 + 社交量）
+        social_volume = int(sentiment_index.get("social_volume", 0) or 0)
+        heat_index = min(100.0, max(0.0, len(news_list) * 2 + social_volume / 30))
+        if heat_index > 70:
+            heat_label = "高热"
+        elif heat_index > 40:
+            heat_label = "中性"
+        else:
+            heat_label = "低热"
+        heat_analysis = {
+            "heat_index": float(heat_index),
+            "heat_label": heat_label,
+        }
+
+        # 综合评分
+        score = float(max(0.0, min(100.0, 50 + sentiment_score * 50 + (heat_index - 50) * 0.3)))
+        if score >= 75:
+            grade = "A"
+            label = "情绪乐观"
+            suggestion = "可关注强势趋势，但避免追高。"
+        elif score >= 55:
+            grade = "B"
+            label = "情绪偏多"
+            suggestion = "以趋势跟随为主，注意回撤。"
+        elif score >= 40:
+            grade = "C"
+            label = "情绪中性"
+            suggestion = "等待更清晰的信号。"
+        else:
+            grade = "D"
+            label = "情绪偏空"
+            suggestion = "谨慎操作，严格风控。"
+        overall_score = {
+            "score": score,
+            "grade": grade,
+            "label": label,
+            "suggestion": suggestion,
+        }
+
+        alerts = self.check_sentiment_alerts(symbol, sentiment_index)
+        risk_level = "low"
+        if any(a.get("level") == "warning" for a in alerts):
+            risk_level = "high"
+        elif alerts:
+            risk_level = "medium"
+        alert_analysis = {
+            "alert_count": len(alerts),
+            "risk_level": risk_level,
+            "alerts": alerts,
+        }
+
+        return {
+            "keyword": symbol,
+            "overall_score": overall_score,
+            "news_sentiment": news_sentiment,
+            "social_sentiment": social_sentiment,
+            "trend_analysis": trend_analysis,
+            "heat_analysis": heat_analysis,
+            "alert_analysis": alert_analysis,
+            "news": news_list[:10],
+            "generated_at": datetime.now().isoformat(),
+        }
+
 
 # 全局实例
 _enhanced_sentiment_service = None

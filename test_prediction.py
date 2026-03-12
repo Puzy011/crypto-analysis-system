@@ -16,6 +16,9 @@ import pandas as pd
 
 
 async def main():
+    if os.getenv("RUN_NETWORK_TESTS", "0") not in {"1", "true", "TRUE"}:
+        print("⏭️  跳过网络测试（设置 RUN_NETWORK_TESTS=1 启用）")
+        return
     # RIVER/USDT 在 OKX 上的交易对
     symbol = "RIVER-USDT-SWAP"  # OKX 合约格式
     
