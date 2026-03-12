@@ -12,7 +12,8 @@ whale_service = WhaleAnalysisService()
 async def get_whale_analysis(
     symbol: str = "BTCUSDT",
     interval: str = "1h",
-    limit: int = 100
+    limit: int = 100,
+    market_type: str = "spot",
 ):
     """获取庄家分析"""
     try:
@@ -20,7 +21,8 @@ async def get_whale_analysis(
         klines = await binance_service.get_klines(
             symbol.upper(),
             interval,
-            limit
+            limit,
+            market_type=market_type,
         )
         
         # 转换为 DataFrame
@@ -43,7 +45,8 @@ async def get_whale_analysis(
 async def get_large_orders(
     symbol: str = "BTCUSDT",
     interval: str = "1h",
-    limit: int = 100
+    limit: int = 100,
+    market_type: str = "spot",
 ):
     """获取大单检测"""
     try:
@@ -51,7 +54,8 @@ async def get_large_orders(
         klines = await binance_service.get_klines(
             symbol.upper(),
             interval,
-            limit
+            limit,
+            market_type=market_type,
         )
         
         # 转换为 DataFrame
@@ -76,7 +80,8 @@ async def get_large_orders(
 async def get_money_flow(
     symbol: str = "BTCUSDT",
     interval: str = "1h",
-    limit: int = 100
+    limit: int = 100,
+    market_type: str = "spot",
 ):
     """获取资金流向分析"""
     try:
@@ -84,7 +89,8 @@ async def get_money_flow(
         klines = await binance_service.get_klines(
             symbol.upper(),
             interval,
-            limit
+            limit,
+            market_type=market_type,
         )
         
         # 转换为 DataFrame

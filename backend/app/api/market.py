@@ -15,6 +15,7 @@ DEFAULT_MARKET_SYMBOLS = [
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
     "LTCUSDT", "BCHUSDT", "TRXUSDT", "ATOMUSDT", "MATICUSDT",
     "UNIUSDT", "ETCUSDT", "NEARUSDT", "AAVEUSDT", "FILUSDT",
+    "RIVERUSDT",
 ]
 
 
@@ -44,10 +45,13 @@ def _normalize_symbol_list(raw: Optional[str], default_quote: str = "USDT") -> L
     return result
 
 @router.get("/ticker/{symbol}")
-async def get_ticker(symbol: str = "BTCUSDT"):
+async def get_ticker(
+    symbol: str = "BTCUSDT",
+    market_type: str = Query("spot", description="spot 或 futures"),
+):
     """获取指定交易对的实时行情"""
     try:
-        ticker = await binance_service.get_ticker(symbol.upper())
+        ticker = await binance_service.get_ticker(symbol.upper(), market_type=market_type)
         return {
             "success": True,
             "data": ticker
@@ -63,6 +67,7 @@ async def get_tickers(
     ),
     limit: int = Query(20, ge=1, le=200, description="未指定 symbols 时返回数量"),
     quote_asset: str = Query("USDT", description="未指定 symbols 时按该计价币筛选"),
+    market_type: str = Query("spot", description="spot 或 futures"),
 ):
     """
     获取多个交易对的实时行情
@@ -77,6 +82,7 @@ async def get_tickers(
                 quote_asset=quote_asset,
                 limit=max(limit, len(DEFAULT_MARKET_SYMBOLS)),
                 include_leveraged=False,
+                market_type=market_type,
             )
             if ranked_symbols:
                 symbol_list = [item["symbol"] for item in ranked_symbols[:limit]]
@@ -85,7 +91,7 @@ async def get_tickers(
 
         # 防止一次请求过大
         symbol_list = symbol_list[:200]
-        tickers = await binance_service.get_tickers(symbol_list)
+        tickers = await binance_service.get_tickers(symbol_list, market_type=market_type)
         return {
             "success": True,
             "data": tickers,
@@ -102,6 +108,7 @@ async def get_symbols(
     limit: int = Query(200, ge=1, le=500, description="返回数量上限"),
     search: Optional[str] = Query(None, description="按 symbol/baseAsset 模糊过滤"),
     include_leveraged: bool = Query(False, description="是否包含杠杆代币"),
+    market_type: str = Query("spot", description="spot 或 futures"),
 ):
     """获取可查询交易对列表（按 24h 成交额排序）"""
     try:
@@ -109,6 +116,7 @@ async def get_symbols(
             quote_asset=quote_asset,
             limit=500,
             include_leveraged=include_leveraged,
+            market_type=market_type,
         )
         if search:
             kw = search.strip().upper()
@@ -132,14 +140,16 @@ async def get_symbols(
 async def get_klines(
     symbol: str = "BTCUSDT",
     interval: str = "1h",
-    limit: int = 100
+    limit: int = 100,
+    market_type: str = Query("spot", description="spot 或 futures"),
 ):
     """获取K线数据"""
     try:
         klines = await binance_service.get_klines(
             symbol.upper(),
             interval,
-            limit
+            limit,
+            market_type=market_type,
         )
         return {
             "success": True,
@@ -152,14 +162,16 @@ async def get_klines(
 async def get_klines_with_indicators(
     symbol: str = "BTCUSDT",
     interval: str = "1h",
-    limit: int = 200
+    limit: int = 200,
+    market_type: str = Query("spot", description="spot 或 futures"),
 ):
     """获取K线数据及技术指标"""
     try:
         klines = await binance_service.get_klines(
             symbol.upper(),
             interval,
-            limit
+            limit,
+            market_type=market_type,
         )
         
         # 转换为 DataFrame

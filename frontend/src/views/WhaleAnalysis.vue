@@ -20,6 +20,13 @@
           </el-select>
         </div>
         <div class="control-item">
+          <span class="control-label">市场</span>
+          <el-radio-group v-model="marketType" size="small" @change="handleMarketChange">
+            <el-radio-button label="spot">现货</el-radio-button>
+            <el-radio-button label="futures">合约</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="control-item">
           <span class="control-label">模式</span>
           <el-radio-group v-model="tradeType" size="small">
             <el-radio-button label="realtime">实时</el-radio-button>
@@ -33,6 +40,19 @@
       </div>
       <div class="mode-note">
         当前模式: {{ whaleAnalysis?.trade_type_label || tradeTypeLabel }}
+        · 市场: {{ whaleAnalysis?.market_label || marketTypeLabel }}
+        <span v-if="report?.mode_note">· {{ report.mode_note }}</span>
+      </div>
+      <div class="recent-queries" v-if="whaleAnalysis?.recent_queries?.length">
+        <span class="control-label">最近查询:</span>
+        <el-tag
+          v-for="(item, idx) in whaleAnalysis.recent_queries.slice(0, 6)"
+          :key="`rq-${idx}`"
+          class="recent-tag"
+          @click="applyRecentQuery(item)"
+        >
+          {{ item.symbol }} · {{ item.market_type === 'futures' ? '合约' : '现货' }}
+        </el-tag>
       </div>
     </div>
 
@@ -56,7 +76,12 @@
 
     <!-- 主力结论（aice100 风格） -->
     <div class="card" v-if="whaleAnalysis">
-      <h3>🧭 主力结论</h3>
+      <div class="card-header">
+        <h3>🧭 主力结论</h3>
+        <el-button v-if="whaleAnalysis?.share_text" size="small" @click="copyShare">
+          复制分享
+        </el-button>
+      </div>
       <div class="aice-summary-grid">
         <div class="summary-block">
           <div class="summary-title">庄家方向</div>
@@ -76,6 +101,32 @@
       <div class="aice-advice">
         <span class="advice-label">交易建议:</span>
         <span>{{ whaleAnalysis.trade_advice || '等待更清晰信号' }}</span>
+      </div>
+      <div class="smart-grid" v-if="report?.key_levels">
+        <div class="smart-item">
+          <span>参考入场</span>
+          <strong>{{ formatPrice(report.key_levels.entry) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>止损位</span>
+          <strong>{{ formatPrice(report.key_levels.stop_loss) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>止盈位</span>
+          <strong>{{ formatPrice(report.key_levels.take_profit) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>计划置信度</span>
+          <strong>{{ ((report.confidence || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+      </div>
+      <div class="signal-points" v-if="report?.entry_conditions?.length || report?.invalidation_conditions?.length">
+        <div v-for="(point, idx) in report.entry_conditions || []" :key="`entry-${idx}`" class="signal-point">
+          触发条件: {{ point }}
+        </div>
+        <div v-for="(point, idx) in report.invalidation_conditions || []" :key="`invalid-${idx}`" class="signal-point">
+          失效条件: {{ point }}
+        </div>
       </div>
       <div class="aice-summary-text" v-if="whaleAnalysis.summary">
         {{ whaleAnalysis.summary }}
@@ -112,7 +163,7 @@
     </div>
 
     <!-- 合约指标 -->
-    <div class="card" v-if="whaleAnalysis?.derivatives">
+    <div class="card" v-if="whaleAnalysis?.market_type === 'futures'">
       <h3>📐 合约偏离指标</h3>
       <div class="smart-grid">
         <div class="smart-item">
@@ -132,6 +183,29 @@
           <strong :class="(whaleAnalysis.derivatives.open_interest_change_pct || 0) >= 0 ? 'positive' : 'negative'">
             {{ ((whaleAnalysis.derivatives.open_interest_change_pct || 0) * 100).toFixed(2) }}%
           </strong>
+        </div>
+        <div class="smart-item">
+          <span>顶级交易员多空比(账户)</span>
+          <strong>{{ (whaleAnalysis.derivatives.top_trader_ls_ratio_accounts || 0).toFixed(3) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>顶级交易员多空比(持仓)</span>
+          <strong>{{ (whaleAnalysis.derivatives.top_trader_ls_ratio_positions || 0).toFixed(3) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>Taker 买卖比</span>
+          <strong>{{ (whaleAnalysis.derivatives.taker_buy_sell_ratio || 0).toFixed(3) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>溢价指数</span>
+          <strong>{{ (whaleAnalysis.derivatives.premium_index || 0).toFixed(5) }}</strong>
+        </div>
+      </div>
+      <div class="signal-points" v-if="whaleAnalysis?.position_regime?.label">
+        <div class="signal-point">
+          仓位结构: {{ whaleAnalysis.position_regime.label }}
+          （OI {{ ((whaleAnalysis.position_regime.oi_change_pct || 0) * 100).toFixed(2) }}%，
+          价格 {{ ((whaleAnalysis.position_regime.price_change_pct || 0) * 100).toFixed(2) }}%）
         </div>
       </div>
     </div>
@@ -165,6 +239,72 @@
           class="signal-point"
         >
           限制: {{ blocker }}
+        </div>
+      </div>
+    </div>
+
+    <!-- 趋势预测 -->
+    <div class="card" v-if="whaleAnalysis?.trend_forecast">
+      <h3>📈 趋势预测</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>方向</span>
+          <strong>{{ whaleAnalysis.trend_forecast.direction_label }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>24H 预期变化</span>
+          <strong :class="(whaleAnalysis.trend_forecast.expected_change_pct || 0) >= 0 ? 'positive' : 'negative'">
+            {{ ((whaleAnalysis.trend_forecast.expected_change_pct || 0) * 100).toFixed(2) }}%
+          </strong>
+        </div>
+        <div class="smart-item">
+          <span>预测置信度</span>
+          <strong>{{ ((whaleAnalysis.trend_forecast.confidence || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>样本数量</span>
+          <strong>{{ whaleAnalysis.trend_forecast.data_points || 0 }}</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关键位 / 成本带 -->
+    <div class="card" v-if="whaleAnalysis?.key_levels || whaleAnalysis?.cost_band">
+      <h3>🎯 关键位与成本带</h3>
+      <div class="smart-grid" v-if="whaleAnalysis?.key_levels">
+        <div class="smart-item">
+          <span>支撑位</span>
+          <strong>{{ formatPrice(whaleAnalysis.key_levels.support) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>阻力位</span>
+          <strong>{{ formatPrice(whaleAnalysis.key_levels.resistance) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>区间中枢</span>
+          <strong>{{ formatPrice(whaleAnalysis.key_levels.mid) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>区间波动</span>
+          <strong>{{ ((whaleAnalysis.key_levels.range_pct || 0) * 100).toFixed(2) }}%</strong>
+        </div>
+      </div>
+      <div class="smart-grid" v-if="whaleAnalysis?.cost_band">
+        <div class="smart-item">
+          <span>成本带下沿</span>
+          <strong>{{ formatPrice(whaleAnalysis.cost_band.low) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>成本带中枢</span>
+          <strong>{{ formatPrice(whaleAnalysis.cost_band.mid) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>成本带上沿</span>
+          <strong>{{ formatPrice(whaleAnalysis.cost_band.high) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>带宽</span>
+          <strong>{{ ((whaleAnalysis.cost_band.band_width_pct || 0) * 100).toFixed(2) }}%</strong>
         </div>
       </div>
     </div>
@@ -350,6 +490,42 @@
         <div class="smart-item sell-bg">
           <span>空头巨鲸</span>
           <strong>{{ smartMoney.short_whales || 0 }}</strong>
+        </div>
+      </div>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>多头盈利比例</span>
+          <strong>{{ ((smartMoney.long_profit_ratio || 0) * 100).toFixed(1) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>空头盈利比例</span>
+          <strong>{{ ((smartMoney.short_profit_ratio || 0) * 100).toFixed(1) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>多头均价</span>
+          <strong>{{ formatPrice(smartMoney.long_avg_price) }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>空头均价</span>
+          <strong>{{ formatPrice(smartMoney.short_avg_price) }}</strong>
+        </div>
+      </div>
+      <div class="smart-grid">
+        <div class="smart-item buy-bg">
+          <span>多头巨鲸均价</span>
+          <strong>{{ formatPrice(smartMoney.long_whales_avg_price) }}</strong>
+        </div>
+        <div class="smart-item sell-bg">
+          <span>空头巨鲸均价</span>
+          <strong>{{ formatPrice(smartMoney.short_whales_avg_price) }}</strong>
+        </div>
+        <div class="smart-item buy-bg">
+          <span>多头巨鲸盈利</span>
+          <strong>{{ ((smartMoney.long_whales_profit_ratio || 0) * 100).toFixed(1) }}%</strong>
+        </div>
+        <div class="smart-item sell-bg">
+          <span>空头巨鲸盈利</span>
+          <strong>{{ ((smartMoney.short_whales_profit_ratio || 0) * 100).toFixed(1) }}%</strong>
         </div>
       </div>
     </div>
@@ -544,17 +720,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { SYMBOLS } from '@/constants'
+import { ElMessage } from 'element-plus'
 
 type TradeType = 'realtime' | 'intraday' | 'longterm'
+type MarketType = 'spot' | 'futures'
 
 const selectedSymbol = ref('BTCUSDT')
-const symbolOptions = ref<Array<{ label: string; value: string }>>([
-  { label: 'BTC/USDT', value: 'BTCUSDT' },
-  { label: 'ETH/USDT', value: 'ETHUSDT' },
-  { label: 'BNB/USDT', value: 'BNBUSDT' },
-  { label: 'SOL/USDT', value: 'SOLUSDT' },
-  { label: 'XRP/USDT', value: 'XRPUSDT' }
-])
+const marketType = ref<MarketType>('spot')
+const symbolOptions = ref<Array<{ label: string; value: string }>>([...SYMBOLS])
 const tradeType = ref<TradeType>('realtime')
 const whaleAnalysis = ref<any>(null)
 const largeOrders = ref<any>(null)
@@ -581,6 +755,10 @@ const onchainReal = computed(() => {
   return null
 })
 
+const report = computed(() => {
+  return whaleAnalysis.value?.report || null
+})
+
 const onchainMetricsSample = computed(() => {
   const sample = whaleAnalysis.value?.onchain_metrics?.sample
   if (!sample) return '暂无'
@@ -596,6 +774,10 @@ const tradeTypeLabel = computed(() => {
   return '中长线'
 })
 
+const marketTypeLabel = computed(() => {
+  return marketType.value === 'futures' ? '合约' : '现货'
+})
+
 const formatTime = (ts: number) => {
   return new Date(ts).toLocaleString('zh-CN')
 }
@@ -603,6 +785,33 @@ const formatTime = (ts: number) => {
 const formatToMillions = (value: number) => {
   if (!value) return '0.00'
   return (value / 1_000_000).toFixed(2)
+}
+
+const formatPrice = (value: any) => {
+  if (value == null || value === '') return '-'
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toFixed(value >= 1 ? 2 : 6)
+  }
+  return String(value)
+}
+
+const copyShare = async () => {
+  const text = whaleAnalysis.value?.share_text
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('分享内容已复制')
+  } catch (error) {
+    console.error('复制分享失败:', error)
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
+const applyRecentQuery = (item: any) => {
+  if (!item) return
+  if (item.symbol) selectedSymbol.value = item.symbol
+  if (item.trade_type) tradeType.value = item.trade_type
+  if (item.market_type) marketType.value = item.market_type
 }
 
 const riskClass = (risk: string) => {
@@ -615,7 +824,7 @@ const riskClass = (risk: string) => {
 const fetchWhaleAnalysis = async () => {
   try {
     const response = await fetch(
-      `${apiBase}/whale-analysis/full/${selectedSymbol.value}?trade_type=${tradeType.value}`
+      `${apiBase}/whale-analysis/full/${selectedSymbol.value}?trade_type=${tradeType.value}&market_type=${marketType.value}`
     )
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
@@ -638,12 +847,15 @@ const fetchWhaleAnalysis = async () => {
 
 const fetchSymbolOptions = async () => {
   try {
-    const response = await fetch('/api/market/symbols?quote_asset=USDT&limit=500')
+    const response = await fetch(`/api/market/symbols?quote_asset=USDT&limit=500&market_type=${marketType.value}`)
     if (!response.ok) return
     const data = await response.json()
     const rows = Array.isArray(data?.data) ? data.data : []
-    if (!rows.length) return
-    symbolOptions.value = rows.map((row: any) => {
+    if (!rows.length) {
+      symbolOptions.value = [...SYMBOLS]
+      return
+    }
+    const dynamicOptions = rows.map((row: any) => {
       const symbol = String(row.symbol || '')
       if (symbol.endsWith('USDT')) {
         return {
@@ -653,12 +865,21 @@ const fetchSymbolOptions = async () => {
       }
       return { value: symbol, label: symbol }
     })
+    const seen = new Set<string>()
+    const merged: Array<{ label: string; value: string }> = []
+    for (const item of [...dynamicOptions, ...SYMBOLS]) {
+      if (!item?.value || seen.has(item.value)) continue
+      seen.add(item.value)
+      merged.push(item)
+    }
+    symbolOptions.value = merged
     const exists = symbolOptions.value.some(item => item.value === selectedSymbol.value)
     if (!exists && symbolOptions.value.length > 0) {
       selectedSymbol.value = symbolOptions.value[0].value
     }
   } catch (error) {
     console.error('获取交易对列表失败:', error)
+    symbolOptions.value = [...SYMBOLS]
   }
 }
 
@@ -675,6 +896,12 @@ const fetchReferences = async () => {
 
 const refreshAll = async () => {
   await fetchWhaleAnalysis()
+}
+
+const handleMarketChange = async () => {
+  await fetchSymbolOptions()
+  await refreshAll()
+  startAutoRefresh()
 }
 
 const getRefreshInterval = () => {
@@ -744,6 +971,13 @@ onUnmounted(() => {
   color: #333;
 }
 
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
 .control-card {
   background: #f8f9ff;
 }
@@ -771,6 +1005,18 @@ onUnmounted(() => {
   margin-top: 10px;
   color: #4b5563;
   font-size: 13px;
+}
+
+.recent-queries {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.recent-tag {
+  cursor: pointer;
 }
 
 .overall-card {

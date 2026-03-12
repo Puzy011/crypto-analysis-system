@@ -9,6 +9,7 @@ export const SYMBOLS = [
   { value: 'BNBUSDT', label: 'BNB/USDT', name: 'Binance Coin' },
   { value: 'SOLUSDT', label: 'SOL/USDT', name: 'Solana' },
   { value: 'XRPUSDT', label: 'XRP/USDT', name: 'Ripple' },
+  { value: 'RIVERUSDT', label: 'RIVER/USDT', name: 'River' },
   { value: 'ADAUSDT', label: 'ADA/USDT', name: 'Cardano' },
   { value: 'DOGEUSDT', label: 'DOGE/USDT', name: 'Dogecoin' },
   { value: 'DOTUSDT', label: 'DOT/USDT', name: 'Polkadot' },

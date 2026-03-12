@@ -13,11 +13,12 @@
           <el-form label-width="100px">
             <el-form-item label="币种">
               <el-select v-model="symbol" @change="loadPrediction">
-                <el-option label="BTC/USDT" value="BTCUSDT" />
-                <el-option label="ETH/USDT" value="ETHUSDT" />
-                <el-option label="BNB/USDT" value="BNBUSDT" />
-                <el-option label="SOL/USDT" value="SOLUSDT" />
-                <el-option label="XRP/USDT" value="XRPUSDT" />
+                <el-option
+                  v-for="item in symbolOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
               </el-select>
             </el-form-item>
             
@@ -160,8 +161,10 @@ import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { SYMBOLS } from '@/constants'
 
 const symbol = ref('BTCUSDT')
+const symbolOptions = SYMBOLS
 const interval = ref('1h')
 const horizon = ref(24)
 const loading = ref(false)

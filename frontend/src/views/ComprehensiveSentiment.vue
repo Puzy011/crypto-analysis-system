@@ -10,10 +10,9 @@
         <div class="control-item">
           <span class="control-label">交易对</span>
           <select v-model="selectedSymbol" class="input-select">
-            <option value="BTCUSDT">BTC/USDT</option>
-            <option value="ETHUSDT">ETH/USDT</option>
-            <option value="BNBUSDT">BNB/USDT</option>
-            <option value="SOLUSDT">SOL/USDT</option>
+            <option v-for="item in symbolOptions" :key="item.value" :value="item.value">
+              {{ item.label }}
+            </option>
           </select>
         </div>
         <div class="control-item">
@@ -341,6 +340,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import { SYMBOLS } from '@/constants'
 
 const isLoading = ref(false)
 const isCollecting = ref(false)
@@ -349,6 +349,7 @@ const schedulerStatus = ref<any>(null)
 const timelinePreview = ref<any[]>([])
 const selectedSymbol = ref('BTCUSDT')
 const forecastHours = ref(24)
+const symbolOptions = SYMBOLS
 
 const apiBase = '/api'
 

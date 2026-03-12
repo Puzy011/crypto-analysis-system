@@ -151,6 +151,12 @@ class BinanceService:
     def _normalize_symbol(self, symbol: str) -> str:
         return str(symbol or "").upper().replace("-", "").replace("_", "")
 
+    def _normalize_market_type(self, market_type: Optional[str]) -> str:
+        mode = str(market_type or "spot").strip().lower()
+        if mode in {"futures", "future", "perp", "perpetual"}:
+            return "futures"
+        return "spot"
+
     def _to_gate_pair(self, symbol: str) -> str:
         normalized = self._normalize_symbol(symbol)
         for suffix in sorted(self.QUOTE_SUFFIXES, key=len, reverse=True):
@@ -186,10 +192,23 @@ class BinanceService:
         }
         return mapping.get(interval, "1h")
     
-    async def get_ticker(self, symbol: str) -> Dict[str, Any]:
+    async def get_ticker(self, symbol: str, market_type: str = "spot") -> Dict[str, Any]:
         """获取单个交易对实时行情（真实数据）"""
         normalized = self._normalize_symbol(symbol)
+        mode = self._normalize_market_type(market_type)
         errors: List[str] = []
+
+        if mode == "futures":
+            try:
+                data = await self._request_binance_futures_json(
+                    "/fapi/v1/ticker/24hr",
+                    params={"symbol": normalized},
+                    timeout=8,
+                )
+                return self._format_ticker(data)
+            except Exception as exc:
+                errors.append(f"binance_futures={exc}")
+            raise RuntimeError(f"无法获取真实 futures ticker({normalized})，{'; '.join(errors)}")
 
         try:
             data = await self._request_binance_spot_json(
@@ -216,7 +235,7 @@ class BinanceService:
 
         raise RuntimeError(f"无法获取真实 ticker({normalized})，{'; '.join(errors)}")
     
-    async def get_tickers(self, symbols: List[str]) -> List[Dict[str, Any]]:
+    async def get_tickers(self, symbols: List[str], market_type: str = "spot") -> List[Dict[str, Any]]:
         """批量获取交易对实时行情（真实数据）"""
         normalized_list = []
         seen = set()
@@ -228,21 +247,32 @@ class BinanceService:
         if not normalized_list:
             return []
 
+        mode = self._normalize_market_type(market_type)
         symbol_set = set(normalized_list)
         result_map: Dict[str, Dict[str, Any]] = {}
         errors: List[str] = []
 
-        try:
-            rows = await self._request_binance_spot_json("/api/v3/ticker/24hr", timeout=10)
-            for row in rows or []:
-                sym = self._normalize_symbol(row.get("symbol", ""))
-                if sym in symbol_set:
-                    result_map[sym] = self._format_ticker(row)
-        except Exception as exc:
-            errors.append(f"binance={exc}")
+        if mode == "futures":
+            try:
+                rows = await self._request_binance_futures_json("/fapi/v1/ticker/24hr", timeout=10)
+                for row in rows or []:
+                    sym = self._normalize_symbol(row.get("symbol", ""))
+                    if sym in symbol_set:
+                        result_map[sym] = self._format_ticker(row)
+            except Exception as exc:
+                errors.append(f"binance_futures={exc}")
+        else:
+            try:
+                rows = await self._request_binance_spot_json("/api/v3/ticker/24hr", timeout=10)
+                for row in rows or []:
+                    sym = self._normalize_symbol(row.get("symbol", ""))
+                    if sym in symbol_set:
+                        result_map[sym] = self._format_ticker(row)
+            except Exception as exc:
+                errors.append(f"binance={exc}")
 
         missing = [s for s in normalized_list if s not in result_map]
-        if missing:
+        if missing and mode == "spot":
             try:
                 gate_rows = await self._request_gate_json("/spot/tickers", timeout=12)
                 for row in gate_rows or []:
@@ -253,7 +283,8 @@ class BinanceService:
                 errors.append(f"gate={exc}")
 
         if not result_map:
-            raise RuntimeError(f"无法获取真实 tickers，{'; '.join(errors)}")
+            scope = "futures" if mode == "futures" else "spot"
+            raise RuntimeError(f"无法获取真实 {scope} tickers，{'; '.join(errors)}")
 
         return [result_map[s] for s in normalized_list if s in result_map]
 
@@ -262,8 +293,16 @@ class BinanceService:
         quote_asset: str = "USDT",
         limit: int = 200,
         include_leveraged: bool = False,
+        market_type: str = "spot",
     ) -> List[Dict[str, Any]]:
         """获取可交易交易对列表（真实数据，按成交额排序）"""
+        mode = self._normalize_market_type(market_type)
+        if mode == "futures":
+            return await self.get_futures_trading_symbols(
+                quote_asset=quote_asset,
+                limit=limit,
+                include_leveraged=include_leveraged,
+            )
         normalized_quote = self._normalize_symbol(quote_asset)
         errors: List[str] = []
 
@@ -346,17 +385,87 @@ class BinanceService:
             errors.append(f"gate={exc}")
 
         raise RuntimeError(f"无法获取真实交易对列表，{'; '.join(errors)}")
+
+    async def get_futures_trading_symbols(
+        self,
+        quote_asset: str = "USDT",
+        limit: int = 200,
+        include_leveraged: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """获取可交易合约交易对列表（Binance USDT-M）"""
+        normalized_quote = self._normalize_symbol(quote_asset)
+        errors: List[str] = []
+
+        try:
+            exchange_info = await self._request_binance_futures_json("/fapi/v1/exchangeInfo", timeout=12)
+            raw_symbols = exchange_info.get("symbols", []) or []
+            candidates: List[Dict[str, Any]] = []
+            for row in raw_symbols:
+                symbol = self._normalize_symbol(row.get("symbol", ""))
+                base_asset = self._normalize_symbol(row.get("baseAsset", ""))
+                q_asset = self._normalize_symbol(row.get("quoteAsset", ""))
+                status = self._normalize_symbol(row.get("status", ""))
+                contract_type = str(row.get("contractType", "")).upper()
+                if not symbol or q_asset != normalized_quote:
+                    continue
+                if status != "TRADING":
+                    continue
+                if contract_type and contract_type not in {"PERPETUAL", "CURRENT_QUARTER", "NEXT_QUARTER"}:
+                    continue
+                if not include_leveraged and self._is_leveraged_token(base_asset):
+                    continue
+                candidates.append(
+                    {
+                        "symbol": symbol,
+                        "baseAsset": base_asset,
+                        "quoteAsset": q_asset,
+                        "status": status,
+                        "contractType": contract_type or "PERPETUAL",
+                    }
+                )
+
+            if candidates:
+                tickers = await self._request_binance_futures_json("/fapi/v1/ticker/24hr", timeout=12)
+                volume_map: Dict[str, float] = {}
+                for t in tickers or []:
+                    sym = self._normalize_symbol(t.get("symbol", ""))
+                    try:
+                        volume_map[sym] = float(t.get("quoteVolume", 0) or 0)
+                    except Exception:
+                        volume_map[sym] = 0.0
+                for item in candidates:
+                    item["quoteVolume"] = float(volume_map.get(item["symbol"], 0.0))
+                candidates.sort(key=lambda x: float(x.get("quoteVolume", 0.0)), reverse=True)
+                return candidates[: max(1, min(int(limit), 500))]
+        except Exception as exc:
+            errors.append(f"binance_futures={exc}")
+
+        raise RuntimeError(f"无法获取真实合约交易对列表，{'; '.join(errors)}")
     
     async def get_klines(
         self, 
         symbol: str, 
         interval: str = "1h", 
-        limit: int = 100
+        limit: int = 100,
+        market_type: str = "spot",
     ) -> List[Dict[str, Any]]:
         """获取K线数据（真实数据）"""
         normalized = self._normalize_symbol(symbol)
         safe_limit = max(1, min(int(limit), 1000))
         errors: List[str] = []
+
+        mode = self._normalize_market_type(market_type)
+        if mode == "futures":
+            try:
+                klines = await self._request_binance_futures_json(
+                    "/fapi/v1/klines",
+                    params={"symbol": normalized, "interval": interval, "limit": safe_limit},
+                    timeout=12,
+                )
+                return [self._format_kline(k) for k in klines]
+            except Exception as exc:
+                errors.append(f"binance_futures={exc}")
+            raise RuntimeError(f"无法获取真实 futures K线({normalized})，{'; '.join(errors)}")
 
         try:
             klines = await self._request_binance_spot_json(
@@ -387,11 +496,25 @@ class BinanceService:
     async def get_agg_trades(
         self,
         symbol: str,
-        limit: int = 1000
+        limit: int = 1000,
+        market_type: str = "spot",
     ) -> List[Dict[str, Any]]:
         """获取聚合成交（真实数据）"""
         normalized = self._normalize_symbol(symbol)
         safe_limit = max(1, min(int(limit), 1000))
+
+        mode = self._normalize_market_type(market_type)
+        if mode == "futures":
+            try:
+                trades = await self._request_binance_futures_json(
+                    "/fapi/v1/aggTrades",
+                    params={"symbol": normalized, "limit": safe_limit},
+                    timeout=8,
+                )
+                return [self._format_agg_trade(t) for t in trades]
+            except Exception as exc:
+                print(f"Binance futures aggTrades 访问失败: {exc}")
+                return []
 
         try:
             trades = await self._request_binance_spot_json(
@@ -420,11 +543,25 @@ class BinanceService:
     async def get_order_book(
         self,
         symbol: str,
-        limit: int = 100
+        limit: int = 100,
+        market_type: str = "spot",
     ) -> Dict[str, Any]:
         """获取现货订单簿深度（真实数据）"""
         normalized = self._normalize_symbol(symbol)
         safe_limit = max(5, min(int(limit), 5000))
+
+        mode = self._normalize_market_type(market_type)
+        if mode == "futures":
+            try:
+                data = await self._request_binance_futures_json(
+                    "/fapi/v1/depth",
+                    params={"symbol": normalized, "limit": safe_limit},
+                    timeout=8,
+                )
+                return self._format_order_book(normalized, data)
+            except Exception as exc:
+                print(f"Binance futures order book 访问失败: {exc}")
+                return {"symbol": normalized, "bids": [], "asks": [], "timestamp": int(datetime.now().timestamp() * 1000)}
 
         try:
             data = await self._request_binance_spot_json(
@@ -653,6 +790,106 @@ class BinanceService:
         except Exception as exc:
             print(f"Gate funding rate 访问失败: {exc}")
             return []
+
+    async def get_top_trader_long_short_ratio(
+        self,
+        symbol: str,
+        period: str = "1h",
+        limit: int = 10,
+        kind: str = "account",
+    ) -> List[Dict[str, Any]]:
+        """获取顶级交易员多空比（账户或持仓）"""
+        normalized = self._normalize_symbol(symbol)
+        safe_limit = max(1, min(int(limit), 200))
+        path = "/futures/data/topLongShortAccountRatio" if kind == "account" else "/futures/data/topLongShortPositionRatio"
+
+        try:
+            data = await self._request_binance_futures_json(
+                path,
+                params={"symbol": normalized, "period": period, "limit": safe_limit},
+                timeout=8,
+            )
+            result = []
+            for item in data or []:
+                result.append(
+                    {
+                        "symbol": item.get("symbol", normalized),
+                        "long_short_ratio": float(item.get("longShortRatio", 0) or 0),
+                        "long_account": float(item.get("longAccount", 0) or 0),
+                        "short_account": float(item.get("shortAccount", 0) or 0),
+                        "timestamp": int(item.get("timestamp", 0) or 0),
+                    }
+                )
+            result.sort(key=lambda x: x.get("timestamp", 0))
+            return result
+        except Exception as exc:
+            print(f"Binance top trader long/short ratio 访问失败: {exc}")
+            return []
+
+    async def get_taker_buy_sell_ratio(
+        self,
+        symbol: str,
+        period: str = "1h",
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """获取主动买卖比（taker buy/sell volume）"""
+        normalized = self._normalize_symbol(symbol)
+        safe_limit = max(1, min(int(limit), 200))
+
+        try:
+            data = await self._request_binance_futures_json(
+                "/futures/data/takerBuySellVol",
+                params={"symbol": normalized, "period": period, "limit": safe_limit},
+                timeout=8,
+            )
+            result = []
+            for item in data or []:
+                buy_vol = float(item.get("buyVol", 0) or 0)
+                sell_vol = float(item.get("sellVol", 0) or 0)
+                total = buy_vol + sell_vol
+                result.append(
+                    {
+                        "symbol": item.get("symbol", normalized),
+                        "buy_volume": buy_vol,
+                        "sell_volume": sell_vol,
+                        "buy_sell_ratio": float(buy_vol / (sell_vol + 1e-8)),
+                        "taker_buy_ratio": float(buy_vol / (total + 1e-8)),
+                        "timestamp": int(item.get("timestamp", 0) or 0),
+                    }
+                )
+            result.sort(key=lambda x: x.get("timestamp", 0))
+            return result
+        except Exception as exc:
+            print(f"Binance taker buy/sell volume 访问失败: {exc}")
+            return []
+
+    async def get_premium_index(
+        self,
+        symbol: str,
+    ) -> Optional[Dict[str, Any]]:
+        """获取合约溢价指数"""
+        normalized = self._normalize_symbol(symbol)
+        try:
+            data = await self._request_binance_futures_json(
+                "/fapi/v1/premiumIndex",
+                params={"symbol": normalized},
+                timeout=8,
+            )
+            mark_price = float(data.get("markPrice", 0) or 0)
+            index_price = float(data.get("indexPrice", 0) or 0)
+            premium = float((mark_price - index_price) / (index_price + 1e-8)) if index_price > 0 else 0.0
+            return {
+                "symbol": data.get("symbol", normalized),
+                "mark_price": mark_price,
+                "index_price": index_price,
+                "last_funding_rate": float(data.get("lastFundingRate", 0) or 0),
+                "next_funding_time": int(data.get("nextFundingTime", 0) or 0),
+                "premium_index": premium,
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }
+        except Exception as exc:
+            print(f"Binance premium index 访问失败: {exc}")
+            return None
     
     def _format_ticker(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """格式化行情数据"""

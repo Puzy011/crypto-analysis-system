@@ -17,6 +17,7 @@ class WhaleAnalysisService:
         # 历史数据
         self.whale_history = defaultdict(lambda: deque(maxlen=1000))
         self.order_flow_history = defaultdict(lambda: deque(maxlen=1000))
+        self.recent_queries = deque(maxlen=30)
         
         # 大单阈值（可配置）
         self.large_order_thresholds = {
@@ -58,6 +59,7 @@ class WhaleAnalysisService:
                 "large_order_quantile": 0.93,
                 "large_order_median_mult": 1.6,
                 "large_order_lookback": 240,
+                "large_order_volume_ratio": 0.0003,
                 "flow_window": 18,
                 "strong_imbalance": 0.18,
                 "moderate_imbalance": 0.08,
@@ -66,6 +68,9 @@ class WhaleAnalysisService:
                 "phase_lookback": 64,
                 "phase_fast_window": 8,
                 "phase_mid_window": 24,
+                "position_regime_window": 12,
+                "position_regime_neutral_pct": 0.006,
+                "position_regime_oi_threshold": 0.02,
                 "accumulation_range": 0.06,
                 "accumulation_fast_trend": 0.018,
                 "pump_fast_trend": 0.03,
@@ -83,6 +88,7 @@ class WhaleAnalysisService:
                 "large_order_quantile": 0.92,
                 "large_order_median_mult": 1.8,
                 "large_order_lookback": 300,
+                "large_order_volume_ratio": 0.00035,
                 "flow_window": 24,
                 "strong_imbalance": 0.22,
                 "moderate_imbalance": 0.10,
@@ -91,6 +97,9 @@ class WhaleAnalysisService:
                 "phase_lookback": 96,
                 "phase_fast_window": 10,
                 "phase_mid_window": 30,
+                "position_regime_window": 18,
+                "position_regime_neutral_pct": 0.008,
+                "position_regime_oi_threshold": 0.025,
                 "accumulation_range": 0.07,
                 "accumulation_fast_trend": 0.02,
                 "pump_fast_trend": 0.04,
@@ -108,6 +117,7 @@ class WhaleAnalysisService:
                 "large_order_quantile": 0.90,
                 "large_order_median_mult": 2.0,
                 "large_order_lookback": 360,
+                "large_order_volume_ratio": 0.00045,
                 "flow_window": 30,
                 "strong_imbalance": 0.26,
                 "moderate_imbalance": 0.12,
@@ -116,6 +126,9 @@ class WhaleAnalysisService:
                 "phase_lookback": 120,
                 "phase_fast_window": 12,
                 "phase_mid_window": 42,
+                "position_regime_window": 24,
+                "position_regime_neutral_pct": 0.01,
+                "position_regime_oi_threshold": 0.03,
                 "accumulation_range": 0.09,
                 "accumulation_fast_trend": 0.028,
                 "pump_fast_trend": 0.06,
@@ -212,6 +225,33 @@ class WhaleAnalysisService:
             },
         ]
 
+    def record_query(self, symbol: str, trade_type: str, market_type: str = "spot") -> List[Dict[str, Any]]:
+        """记录最近查询，用于前端快速回查。"""
+        payload = {
+            "symbol": str(symbol or "").upper(),
+            "trade_type": str(trade_type or "realtime"),
+            "market_type": str(market_type or "spot"),
+            "timestamp": int(datetime.now().timestamp() * 1000),
+        }
+        # 去重：相同 symbol+trade_type+market_type 刷新时间
+        for idx, item in enumerate(list(self.recent_queries)):
+            if (
+                item.get("symbol") == payload["symbol"]
+                and item.get("trade_type") == payload["trade_type"]
+                and item.get("market_type") == payload["market_type"]
+            ):
+                try:
+                    self.recent_queries.remove(item)
+                except ValueError:
+                    pass
+                break
+        self.recent_queries.appendleft(payload)
+        return list(self.recent_queries)
+
+    def get_recent_queries(self, limit: int = 10) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit), 30))
+        return list(self.recent_queries)[:limit]
+
     def get_research_references(self) -> List[Dict[str, Any]]:
         """返回庄家分析参考文献列表（前端可直接展示）"""
         return [dict(item) for item in self.research_references]
@@ -299,7 +339,8 @@ class WhaleAnalysisService:
         symbol: str,
         trades: List[Dict[str, Any]] = None,
         klines: pd.DataFrame = None,
-        trade_type: str = "realtime"
+        trade_type: str = "realtime",
+        ticker_24h: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         检测大单交易
@@ -316,15 +357,18 @@ class WhaleAnalysisService:
         buy_count = 0
         sell_count = 0
 
+        ticker_quote_volume = float((ticker_24h or {}).get("quoteVolume", 0) or 0.0)
+        base_threshold = float(self.large_order_thresholds.get(symbol, self.large_order_thresholds["DEFAULT"]))
+        ratio_threshold = float(ticker_quote_volume * profile.get("large_order_volume_ratio", 0.0)) if ticker_quote_volume > 0 else 0.0
+
         # 1) 成交逐笔数据优先
         if trades:
             values = [float(t.get("price", 0)) * float(t.get("amount", 0)) for t in trades]
-            threshold = (
-                np.quantile(values, profile["large_order_quantile"])
-                if values
-                else self.large_order_thresholds["DEFAULT"]
-            )
-            threshold = max(float(threshold), float(self.large_order_thresholds.get(symbol, self.large_order_thresholds["DEFAULT"])))
+            threshold_candidates = [base_threshold, ratio_threshold]
+            if values:
+                threshold_candidates.append(float(np.quantile(values, profile["large_order_quantile"])))
+                threshold_candidates.append(float(np.median(values) * profile["large_order_median_mult"]))
+            threshold = max(threshold_candidates)
             for trade in trades:
                 amount = float(trade.get("amount", 0))
                 price = float(trade.get("price", 0))
@@ -365,7 +409,8 @@ class WhaleAnalysisService:
                 max(
                     recent["quoteVolume"].quantile(profile["large_order_quantile"]),
                     recent["quoteVolume"].median() * profile["large_order_median_mult"],
-                    self.large_order_thresholds["DEFAULT"],
+                    ratio_threshold,
+                    base_threshold,
                 )
             )
             threshold = dynamic_threshold
@@ -397,7 +442,7 @@ class WhaleAnalysisService:
                     sell_volume += sell_quote
                     sell_count += 1
         else:
-            threshold = self.large_order_thresholds.get(symbol, self.large_order_thresholds["DEFAULT"])
+            threshold = max(base_threshold, ratio_threshold)
         
         # 计算大单比率
         total_large_volume = buy_volume + sell_volume
@@ -522,6 +567,7 @@ class WhaleAnalysisService:
         symbol: str,
         klines: pd.DataFrame = None,
         order_book: Dict[str, Any] = None,
+        trades: List[Dict[str, Any]] = None,
         trade_type: str = "realtime"
     ) -> Dict[str, Any]:
         """
@@ -530,45 +576,75 @@ class WhaleAnalysisService:
         参考: OrderFlow Analysis Tools
         """
         profile = self.get_trade_profile(trade_type)
-        if klines is None or len(klines) < 20:
+        has_trades = bool(trades)
+        if (klines is None or len(klines) < 20) and not has_trades:
             return self._empty_order_flow(symbol, profile["trade_type"], "K线样本不足")
-        
-        df = klines.copy()
-        for col in ["open", "high", "low", "close", "volume"]:
-            if col not in df.columns:
-                return self._empty_order_flow(symbol, profile["trade_type"], f"K线缺少字段: {col}")
-        if "quoteVolume" not in df.columns:
-            df["quoteVolume"] = df["close"] * df["volume"]
-        if "takerBuyQuote" not in df.columns:
-            df["takerBuyQuote"] = df["quoteVolume"] * 0.5
-        
-        # 1. 计算成交量指标
-        df["volume_ma"] = df["volume"].rolling(window=20).mean()
-        df["volume_ratio"] = df["volume"] / df["volume_ma"]
-        
-        # 2. 买卖盘力度（优先 taker 主动买入）
-        df["buy_pressure_quote"] = df["takerBuyQuote"].clip(lower=0)
-        df["sell_pressure_quote"] = (df["quoteVolume"] - df["buy_pressure_quote"]).clip(lower=0)
-        df["order_imbalance"] = (
-            (df["buy_pressure_quote"] - df["sell_pressure_quote"])
-            / (df["quoteVolume"] + 1e-8)
-        )
-        df["cvd_step"] = df["buy_pressure_quote"] - df["sell_pressure_quote"]
-        df["cvd"] = df["cvd_step"].cumsum()
-        
-        # 3. 统计
-        recent = df.iloc[-min(int(profile["flow_window"]), len(df)):]
-        
-        avg_volume = float(recent["volume"].mean())
-        max_volume = float(recent["volume"].max())
-        avg_imbalance = float(recent["order_imbalance"].mean())
-        net_buy_pressure = float(
-            recent["buy_pressure_quote"].sum() - recent["sell_pressure_quote"].sum()
-        )
-        aggressive_buy_ratio = float(
-            recent["buy_pressure_quote"].sum() / (recent["quoteVolume"].sum() + 1e-8)
-        )
-        cvd_change = float(recent["cvd"].iloc[-1] - recent["cvd"].iloc[0])
+
+        df = None
+        if klines is not None and len(klines) >= 20:
+            df = klines.copy()
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col not in df.columns:
+                    return self._empty_order_flow(symbol, profile["trade_type"], f"K线缺少字段: {col}")
+            if "quoteVolume" not in df.columns:
+                df["quoteVolume"] = df["close"] * df["volume"]
+            if "takerBuyQuote" not in df.columns:
+                df["takerBuyQuote"] = df["quoteVolume"] * 0.5
+
+            # 1. 计算成交量指标
+            df["volume_ma"] = df["volume"].rolling(window=20).mean()
+            df["volume_ratio"] = df["volume"] / df["volume_ma"]
+
+            # 2. 买卖盘力度（优先 taker 主动买入）
+            df["buy_pressure_quote"] = df["takerBuyQuote"].clip(lower=0)
+            df["sell_pressure_quote"] = (df["quoteVolume"] - df["buy_pressure_quote"]).clip(lower=0)
+            df["order_imbalance"] = (
+                (df["buy_pressure_quote"] - df["sell_pressure_quote"])
+                / (df["quoteVolume"] + 1e-8)
+            )
+            df["cvd_step"] = df["buy_pressure_quote"] - df["sell_pressure_quote"]
+            df["cvd"] = df["cvd_step"].cumsum()
+
+        if has_trades:
+            values = []
+            buy_quote = 0.0
+            sell_quote = 0.0
+            cvd_series = []
+            current_cvd = 0.0
+
+            for trade in sorted(trades, key=lambda x: x.get("timestamp", 0)):
+                price = float(trade.get("price", 0))
+                amount = float(trade.get("amount", 0))
+                value = price * amount
+                values.append(value)
+                is_buyer_maker = bool(trade.get("is_buyer_maker", False))
+                if is_buyer_maker:
+                    sell_quote += value
+                    current_cvd -= value
+                else:
+                    buy_quote += value
+                    current_cvd += value
+                cvd_series.append(current_cvd)
+
+            total_quote = buy_quote + sell_quote
+            avg_volume = float(np.mean(values)) if values else 0.0
+            max_volume = float(np.max(values)) if values else 0.0
+            avg_imbalance = float((buy_quote - sell_quote) / (total_quote + 1e-8)) if total_quote > 0 else 0.0
+            net_buy_pressure = float(buy_quote - sell_quote)
+            aggressive_buy_ratio = float(buy_quote / (total_quote + 1e-8)) if total_quote > 0 else 0.5
+            cvd_change = float(cvd_series[-1] - cvd_series[0]) if len(cvd_series) >= 2 else 0.0
+        else:
+            recent = df.iloc[-min(int(profile["flow_window"]), len(df)):]
+            avg_volume = float(recent["volume"].mean())
+            max_volume = float(recent["volume"].max())
+            avg_imbalance = float(recent["order_imbalance"].mean())
+            net_buy_pressure = float(
+                recent["buy_pressure_quote"].sum() - recent["sell_pressure_quote"].sum()
+            )
+            aggressive_buy_ratio = float(
+                recent["buy_pressure_quote"].sum() / (recent["quoteVolume"].sum() + 1e-8)
+            )
+            cvd_change = float(recent["cvd"].iloc[-1] - recent["cvd"].iloc[0])
 
         # 盘口买卖盘不平衡（可提升短线方向判断）
         book_buy_notional = 0.0
@@ -622,7 +698,11 @@ class WhaleAnalysisService:
             "cvd_change": cvd_change,
             "buy_dominance": float(max(0, combined_imbalance + 0.5)),
             "sell_dominance": float(max(0, -combined_imbalance + 0.5)),
-            "data_source": "kline+orderbook" if order_book else "kline",
+            "data_source": (
+                "agg_trades+orderbook"
+                if has_trades and order_book
+                else ("agg_trades" if has_trades else ("kline+orderbook" if order_book else "kline"))
+            ),
             "analyzed_at": datetime.now().isoformat()
         }
         
@@ -891,6 +971,79 @@ class WhaleAnalysisService:
             "available": True,
         }
 
+    def _classify_position_regime(
+        self,
+        klines: pd.DataFrame,
+        derivatives: Dict[str, Any],
+        trade_type: str,
+    ) -> Dict[str, Any]:
+        profile = self.get_trade_profile(trade_type)
+        if klines is None or klines.empty:
+            return {
+                "available": False,
+                "regime": "unknown",
+                "label": "数据不足",
+                "price_change_pct": 0.0,
+                "oi_change_pct": float(derivatives.get("open_interest_change_pct", 0.0) or 0.0),
+                "bias": "neutral",
+                "note": "缺少有效 K 线样本",
+            }
+
+        closes = klines["close"].astype(float).values
+        window = int(profile.get("position_regime_window", 12))
+        if len(closes) <= window:
+            return {
+                "available": False,
+                "regime": "unknown",
+                "label": "样本不足",
+                "price_change_pct": 0.0,
+                "oi_change_pct": float(derivatives.get("open_interest_change_pct", 0.0) or 0.0),
+                "bias": "neutral",
+                "note": "K 线窗口不足",
+            }
+
+        price_change = float((closes[-1] - closes[-window]) / (closes[-window] + 1e-8))
+        oi_change = float(derivatives.get("open_interest_change_pct", 0.0) or 0.0)
+        neutral_pct = float(profile.get("position_regime_neutral_pct", 0.008))
+        oi_threshold = float(profile.get("position_regime_oi_threshold", 0.02))
+
+        regime = "neutral"
+        label = "中性"
+        bias = "neutral"
+        note = "仓位与价格变化不显著"
+
+        if oi_change > oi_threshold and price_change > neutral_pct:
+            regime = "long_build"
+            label = "多头增仓"
+            bias = "bullish"
+            note = "持仓上升且价格上行，资金顺势加码"
+        elif oi_change > oi_threshold and price_change < -neutral_pct:
+            regime = "short_build"
+            label = "空头增仓"
+            bias = "bearish"
+            note = "持仓上升但价格下行，空头力量增强"
+        elif oi_change < -oi_threshold and price_change > neutral_pct:
+            regime = "short_covering"
+            label = "空头回补"
+            bias = "bullish"
+            note = "持仓下降且价格上行，空头回补推动"
+        elif oi_change < -oi_threshold and price_change < -neutral_pct:
+            regime = "long_unwind"
+            label = "多头减仓"
+            bias = "bearish"
+            note = "持仓下降且价格下行，多头撤退"
+
+        return {
+            "available": True,
+            "regime": regime,
+            "label": label,
+            "price_change_pct": price_change,
+            "oi_change_pct": oi_change,
+            "bias": bias,
+            "note": note,
+            "window": window,
+        }
+
     def build_whale_indicator_matrix(
         self,
         symbol: str,
@@ -985,10 +1138,15 @@ class WhaleAnalysisService:
         )
 
         volume_profile = self._build_volume_profile_metrics(klines, bins=26)
+        position_regime = self._classify_position_regime(klines, derivatives, trade_type)
 
         funding_rate = float(derivatives.get("funding_rate", 0.0) or 0.0)
         long_short_ratio = float(derivatives.get("long_short_ratio", 0.0) or 0.0)
         oi_change = float(derivatives.get("open_interest_change_pct", 0.0) or 0.0)
+        top_trader_accounts = float(derivatives.get("top_trader_ls_ratio_accounts", 0.0) or 0.0)
+        top_trader_positions = float(derivatives.get("top_trader_ls_ratio_positions", 0.0) or 0.0)
+        taker_buy_sell_ratio = float(derivatives.get("taker_buy_sell_ratio", 0.0) or 0.0)
+        premium_index = float(derivatives.get("premium_index", 0.0) or 0.0)
 
         onchain_available = bool(onchain_metrics.get("available", False))
         onchain_exchange = onchain_metrics.get("exchange_netflow", {}) or {}
@@ -1014,6 +1172,10 @@ class WhaleAnalysisService:
             bearish_score += 0.6
         elif oi_change > 0.03 and combined_imbalance > 0:
             bullish_score += 0.6
+        if position_regime.get("bias") == "bullish":
+            bullish_score += 0.4
+        elif position_regime.get("bias") == "bearish":
+            bearish_score += 0.4
         if bearish_divergence:
             bearish_score += 0.8
 
@@ -1095,6 +1257,11 @@ class WhaleAnalysisService:
                 "funding_rate": funding_rate,
                 "long_short_ratio": long_short_ratio,
                 "open_interest_change_pct": oi_change,
+                "top_trader_ls_ratio_accounts": top_trader_accounts,
+                "top_trader_ls_ratio_positions": top_trader_positions,
+                "taker_buy_sell_ratio": taker_buy_sell_ratio,
+                "premium_index": premium_index,
+                "position_regime": position_regime,
             },
             "summary": {
                 "smart_money_score": smart_money_score,
@@ -1107,6 +1274,7 @@ class WhaleAnalysisService:
                 "exchange_net_flow_usd 当前使用大额主动成交净流作为交易所净流代理。",
                 "concentration_ratio_proxy 为大额成交集中度与盘口深度集中度的融合估计。",
                 "spoofing_risk_proxy 为快照风险代理，不等价于完整撤单频率统计。",
+                "position_regime 基于 OI 变化与价格变化的仓位结构分类。",
                 "onchain_real 基于公开 Ethereum JSON-RPC 采样，覆盖地址净流、活跃地址、Gas 与余额集中度。",
             ],
             "analyzed_at": datetime.now().isoformat(),
@@ -1276,6 +1444,139 @@ class WhaleAnalysisService:
                 break
         return events
 
+    def build_trend_forecast(
+        self,
+        klines: pd.DataFrame,
+        trade_type: str = "realtime",
+    ) -> Dict[str, Any]:
+        """生成简易趋势预测（24H 方向 + 置信度）。"""
+        if klines is None or klines.empty or len(klines) < 30:
+            return {
+                "direction": "sideways",
+                "direction_label": "震荡",
+                "forecast_score": 0.0,
+                "confidence": 0.0,
+                "expected_change_pct": 0.0,
+                "data_points": int(len(klines)) if klines is not None else 0,
+            }
+
+        profile = self.get_trade_profile(trade_type)
+        df = klines.copy().dropna(subset=["close"])
+        if "timestamp" not in df.columns:
+            df["timestamp"] = np.arange(len(df))
+        df = df.sort_values("timestamp")
+
+        bars_per_day = int(profile.get("bars_per_day", 24))
+        window = min(len(df), max(60, bars_per_day * 2))
+        recent = df.tail(window)
+
+        closes = recent["close"].astype(float).values
+        x = np.arange(len(closes))
+        if len(closes) < 5:
+            return {
+                "direction": "sideways",
+                "direction_label": "震荡",
+                "forecast_score": 0.0,
+                "confidence": 0.0,
+                "expected_change_pct": 0.0,
+                "data_points": int(len(closes)),
+            }
+
+        slope = float(np.polyfit(x, closes, 1)[0])
+        avg_price = float(np.mean(closes)) if len(closes) else 0.0
+        price_vol = float(np.std(closes) / (avg_price + 1e-8))
+        slope_norm = float(slope / (avg_price + 1e-8))
+        expected_change_pct = float(slope_norm * bars_per_day)
+
+        threshold = 0.0015
+        if expected_change_pct > threshold:
+            direction = "up"
+            direction_label = "偏多"
+        elif expected_change_pct < -threshold:
+            direction = "down"
+            direction_label = "偏空"
+        else:
+            direction = "sideways"
+            direction_label = "震荡"
+
+        confidence = min(0.95, max(0.15, abs(expected_change_pct) / (price_vol + 1e-4)))
+
+        return {
+            "direction": direction,
+            "direction_label": direction_label,
+            "forecast_score": float(expected_change_pct),
+            "confidence": float(confidence),
+            "expected_change_pct": float(expected_change_pct),
+            "data_points": int(len(closes)),
+        }
+
+    def build_key_levels(
+        self,
+        klines: pd.DataFrame,
+        trade_type: str = "realtime",
+    ) -> Dict[str, Any]:
+        """输出关键位：近期支撑/阻力 + 区间强度。"""
+        if klines is None or klines.empty:
+            return {"support": None, "resistance": None, "range_pct": 0.0}
+
+        profile = self.get_trade_profile(trade_type)
+        df = klines.copy()
+        if "timestamp" not in df.columns:
+            df["timestamp"] = np.arange(len(df))
+        df = df.sort_values("timestamp")
+        window = min(len(df), max(120, int(profile.get("bars_per_day", 24) * 3)))
+        recent = df.tail(window)
+
+        support = float(recent["low"].min())
+        resistance = float(recent["high"].max())
+        mid = float((support + resistance) / 2.0)
+        range_pct = float((resistance - support) / (mid + 1e-8)) if mid > 0 else 0.0
+
+        return {
+            "support": support,
+            "resistance": resistance,
+            "mid": mid,
+            "range_pct": range_pct,
+            "window": int(window),
+        }
+
+    def build_cost_band(
+        self,
+        klines: pd.DataFrame,
+        trade_type: str = "realtime",
+    ) -> Dict[str, Any]:
+        """计算成本带：使用成交量加权均值 + 1σ 带。"""
+        if klines is None or klines.empty:
+            return {"low": None, "mid": None, "high": None, "band_width_pct": 0.0}
+
+        profile = self.get_trade_profile(trade_type)
+        df = klines.copy()
+        if "timestamp" not in df.columns:
+            df["timestamp"] = np.arange(len(df))
+        df = df.sort_values("timestamp")
+        window = min(len(df), max(120, int(profile.get("bars_per_day", 24) * 4)))
+        recent = df.tail(window)
+
+        closes = recent["close"].astype(float).values
+        vols = recent["volume"].astype(float).values
+        if np.sum(vols) <= 0:
+            return {"low": None, "mid": None, "high": None, "band_width_pct": 0.0}
+
+        vwap = float(np.sum(closes * vols) / (np.sum(vols) + 1e-8))
+        weighted_var = float(np.sum(vols * (closes - vwap) ** 2) / (np.sum(vols) + 1e-8))
+        sigma = float(np.sqrt(max(weighted_var, 0.0)))
+        low = vwap - sigma
+        high = vwap + sigma
+        band_width_pct = float((high - low) / (vwap + 1e-8)) if vwap > 0 else 0.0
+
+        return {
+            "low": float(low),
+            "mid": float(vwap),
+            "high": float(high),
+            "band_width_pct": band_width_pct,
+            "window": int(window),
+        }
+
     def build_aice_style_summary(
         self,
         symbol: str,
@@ -1376,6 +1677,11 @@ class WhaleAnalysisService:
             f"订单不平衡：{order_flow.get('combined_imbalance', order_flow.get('order_imbalance', 0)):.3f}，CVD 变化 {order_flow.get('cvd_change', 0):.2f}",
             f"合约数据：资金费率 {funding_rate*100:.4f}%，多空比 {long_short_ratio:.3f}，OI变化 {open_interest_change_pct*100:.2f}%",
         ]
+        position_regime = (indicator_matrix.get("derivatives_metrics", {}) or {}).get("position_regime", {}) if indicator_matrix else {}
+        if isinstance(position_regime, dict) and position_regime.get("available"):
+            signal_explanation.append(
+                f"仓位结构：{position_regime.get('label', '中性')}（OI {position_regime.get('oi_change_pct', 0)*100:.2f}%，价格 {position_regime.get('price_change_pct', 0)*100:.2f}%）"
+            )
         if indicator_matrix:
             signal_explanation.append(
                 f"指标矩阵：SmartMoney得分 {matrix_score:.1f}（{matrix_summary.get('direction_label', '中性')}）"
@@ -1517,6 +1823,7 @@ class WhaleAnalysisService:
         trades: List[Dict[str, Any]] = None,
         order_book: Dict[str, Any] = None,
         derivatives: Dict[str, Any] = None,
+        market_type: str = "spot",
     ) -> Dict[str, Any]:
         """输出数据源覆盖与质量评分，便于前端展示可信度。"""
         derivatives = derivatives or {}
@@ -1526,11 +1833,21 @@ class WhaleAnalysisService:
         asks = (order_book or {}).get("asks", []) if order_book else []
         order_book_depth = min(len(bids), len(asks))
 
+        normalized_market = str(market_type or "spot").lower()
+        derivatives_available = bool(
+            derivatives.get("open_interest")
+            or derivatives.get("long_short_ratio")
+            or derivatives.get("funding_rate")
+            or derivatives.get("top_trader_ls_ratio_accounts")
+            or derivatives.get("taker_buy_sell_ratio")
+            or derivatives.get("premium_index")
+        )
+
         source_scores = {
             "kline": 0.35 if kline_ok else 0.0,
             "agg_trades": 0.25 if trades_count >= 200 else (0.12 if trades_count >= 50 else 0.0),
             "order_book": 0.20 if order_book_depth >= 20 else (0.08 if order_book_depth >= 5 else 0.0),
-            "derivatives": 0.20 if derivatives.get("open_interest") or derivatives.get("long_short_ratio") else 0.0,
+            "derivatives": 0.20 if normalized_market == "futures" and derivatives_available else 0.0,
         }
         quality_score = float(sum(source_scores.values()))
 
@@ -1567,6 +1884,10 @@ class WhaleAnalysisService:
                     "open_interest": float(derivatives.get("open_interest", 0.0) or 0.0),
                     "long_short_ratio": float(derivatives.get("long_short_ratio", 0.0) or 0.0),
                     "funding_rate": float(derivatives.get("funding_rate", 0.0) or 0.0),
+                    "top_trader_ls_ratio_accounts": float(derivatives.get("top_trader_ls_ratio_accounts", 0.0) or 0.0),
+                    "top_trader_ls_ratio_positions": float(derivatives.get("top_trader_ls_ratio_positions", 0.0) or 0.0),
+                    "taker_buy_sell_ratio": float(derivatives.get("taker_buy_sell_ratio", 0.0) or 0.0),
+                    "premium_index": float(derivatives.get("premium_index", 0.0) or 0.0),
                 },
             },
         }

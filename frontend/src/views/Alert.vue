@@ -79,11 +79,12 @@
       <el-form :model="newAlert" label-width="100px">
         <el-form-item label="币种">
           <el-select v-model="newAlert.symbol" placeholder="请选择币种">
-            <el-option label="BTC/USDT" value="BTCUSDT" />
-            <el-option label="ETH/USDT" value="ETHUSDT" />
-            <el-option label="BNB/USDT" value="BNBUSDT" />
-            <el-option label="SOL/USDT" value="SOLUSDT" />
-            <el-option label="XRP/USDT" value="XRPUSDT" />
+            <el-option
+              v-for="item in symbolOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
         </el-form-item>
         
@@ -139,9 +140,11 @@ import { useAlertStore } from '@/stores/alert'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { PriceAlert } from '@/stores/alert'
+import { SYMBOLS } from '@/constants'
 
 const alertStore = useAlertStore()
 const showAddDialog = ref(false)
+const symbolOptions = SYMBOLS
 
 type AlertType = PriceAlert['type']
 

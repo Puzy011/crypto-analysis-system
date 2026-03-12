@@ -11,14 +11,34 @@
           </template>
           
           <el-form label-width="100px">
+            <el-form-item label="市场">
+              <el-radio-group v-model="marketType" size="small" @change="handleMarketChange">
+                <el-radio-button label="spot">现货</el-radio-button>
+                <el-radio-button label="futures">合约</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+
             <el-form-item label="币种">
               <el-select v-model="symbol" @change="loadAnalysis">
-                <el-option label="BTC/USDT" value="BTCUSDT" />
-                <el-option label="ETH/USDT" value="ETHUSDT" />
-                <el-option label="BNB/USDT" value="BNBUSDT" />
-                <el-option label="SOL/USDT" value="SOLUSDT" />
-                <el-option label="XRP/USDT" value="XRPUSDT" />
+                <el-option
+                  v-for="item in symbolOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
               </el-select>
+            </el-form-item>
+
+            <el-form-item label="最近查询" v-if="recentQueries.length">
+              <div class="recent-tags">
+                <el-tag
+                  v-for="(item, idx) in recentQueries.slice(0, 6)"
+                  :key="`rq-${idx}`"
+                  @click="applyRecentQuery(item)"
+                >
+                  {{ item.symbol }} · {{ item.market_type === 'futures' ? '合约' : '现货' }}
+                </el-tag>
+              </div>
             </el-form-item>
             
             <el-form-item label="时间周期">
@@ -41,6 +61,71 @@
       
       <!-- 右侧：分析结果 -->
       <el-col :span="16">
+        <!-- 报告摘要 -->
+        <el-card v-if="report" style="margin-bottom: 20px;">
+          <template #header>
+            <div class="card-header">
+              <span>🧾 报告摘要</span>
+              <el-button size="small" @click="copyShare" :disabled="!shareText">
+                复制分享
+              </el-button>
+            </div>
+          </template>
+
+          <div class="report-note" v-if="report.mode_note">
+            {{ report.mode_note }}
+          </div>
+
+          <div class="report-grid">
+            <div class="report-item">
+              <span class="label">庄家方向</span>
+              <span class="value">{{ report.direction || '-' }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">庄家动作</span>
+              <span class="value">{{ report.action || '-' }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">交易建议</span>
+              <span class="value">{{ report.advice || '-' }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">风险控制</span>
+              <span class="value">{{ report.risk_control || '-' }}</span>
+            </div>
+          </div>
+
+          <el-divider />
+
+          <div class="report-grid" v-if="report.key_levels">
+            <div class="report-item">
+              <span class="label">参考入场</span>
+              <span class="value">{{ formatPrice(report.key_levels.entry) }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">止损位</span>
+              <span class="value">{{ formatPrice(report.key_levels.stop_loss) }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">止盈位</span>
+              <span class="value">{{ formatPrice(report.key_levels.take_profit) }}</span>
+            </div>
+            <div class="report-item">
+              <span class="label">置信度</span>
+              <span class="value">{{ ((report.confidence || 0) * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+
+          <div class="report-points" v-if="report.entry_conditions?.length || report.invalidation_conditions?.length">
+            <div v-for="(point, idx) in report.entry_conditions || []" :key="`entry-${idx}`" class="report-point">
+              触发条件: {{ point }}
+            </div>
+            <div v-for="(point, idx) in report.invalidation_conditions || []" :key="`invalid-${idx}`" class="report-point">
+              失效条件: {{ point }}
+            </div>
+          </div>
+        </el-card>
+
         <!-- 阶段识别 -->
         <el-card style="margin-bottom: 20px;">
           <template #header>
@@ -206,21 +291,89 @@ import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { SYMBOLS } from '@/constants'
 
 const symbol = ref('BTCUSDT')
 const interval = ref('1h')
+const marketType = ref<'spot' | 'futures'>('spot')
+const symbolOptions = ref<Array<{ label: string; value: string }>>([...SYMBOLS])
 const loading = ref(false)
 const whaleAnalysis = ref<any>(null)
+const report = ref<any>(null)
+const shareText = ref('')
+const recentQueries = ref<any[]>([])
+
+const mergeSymbolOptions = (
+  primary: Array<{ label: string; value: string }>,
+  fallback: Array<{ label: string; value: string }>
+) => {
+  const merged: Array<{ label: string; value: string }> = []
+  const seen = new Set<string>()
+  for (const item of [...primary, ...fallback]) {
+    if (!item?.value || seen.has(item.value)) continue
+    seen.add(item.value)
+    merged.push(item)
+  }
+  return merged
+}
+
+const fetchSymbolOptions = async () => {
+  try {
+    const response = await axios.get('/api/market/symbols', {
+      params: {
+        quote_asset: 'USDT',
+        limit: 500,
+        market_type: marketType.value
+      }
+    })
+    if (response.data?.success && Array.isArray(response.data.data)) {
+      const rows = response.data.data
+      if (!rows.length) {
+        symbolOptions.value = [...SYMBOLS]
+      } else {
+        const dynamicOptions = rows.map((row: any) => {
+          const symbolValue = String(row.symbol || '')
+          if (symbolValue.endsWith('USDT')) {
+            return { value: symbolValue, label: `${symbolValue.slice(0, -4)}/USDT` }
+          }
+          return { value: symbolValue, label: symbolValue }
+        })
+        symbolOptions.value = mergeSymbolOptions(dynamicOptions, SYMBOLS)
+      }
+    } else {
+      symbolOptions.value = [...SYMBOLS]
+    }
+  } catch (error) {
+    symbolOptions.value = [...SYMBOLS]
+    console.error('获取交易对列表失败:', error)
+  }
+
+  const exists = symbolOptions.value.some(item => item.value === symbol.value)
+  if (!exists && symbolOptions.value.length > 0) {
+    symbol.value = symbolOptions.value[0].value
+  }
+}
 
 const loadAnalysis = async () => {
   loading.value = true
   
   try {
-    const response = await axios.get(`/api/whale/analyze/${symbol.value}`, {
-      params: { interval: interval.value }
-    })
-    if (response.data.success) {
-      whaleAnalysis.value = response.data.data
+    const tradeType = getTradeTypeByInterval(interval.value)
+    const [baseRes, reportRes] = await Promise.all([
+      axios.get(`/api/whale/analyze/${symbol.value}`, {
+        params: { interval: interval.value, market_type: marketType.value }
+      }),
+      axios.get(`/api/whale-analysis/full/${symbol.value}`, {
+        params: { trade_type: tradeType, market_type: marketType.value }
+      })
+    ])
+    if (baseRes.data?.success) {
+      whaleAnalysis.value = baseRes.data.data
+    }
+    if (reportRes.data?.success) {
+      report.value = reportRes.data.report || null
+      shareText.value = reportRes.data.share_text || ''
+      recentQueries.value = reportRes.data.recent_queries || []
     }
   } catch (error) {
     console.error('加载庄家分析失败:', error)
@@ -228,6 +381,11 @@ const loadAnalysis = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const handleMarketChange = async () => {
+  await fetchSymbolOptions()
+  await loadAnalysis()
 }
 
 const getPhaseText = (phase: string): string => {
@@ -295,12 +453,46 @@ const formatVolume = (volume: number): string => {
   return volume.toFixed(2)
 }
 
+const formatPrice = (value: any): string => {
+  if (value == null || value === '') return '-'
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toFixed(value >= 1 ? 2 : 6)
+  }
+  return String(value)
+}
+
+const getTradeTypeByInterval = (value: string): string => {
+  if (value === '1h') return 'intraday'
+  if (value === '4h' || value === '1d') return 'longterm'
+  return 'realtime'
+}
+
+const copyShare = async () => {
+  if (!shareText.value) return
+  try {
+    await navigator.clipboard.writeText(shareText.value)
+    ElMessage.success('分享内容已复制')
+  } catch (error) {
+    console.error('复制分享失败:', error)
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
+const applyRecentQuery = (item: any) => {
+  if (!item) return
+  if (item.symbol) symbol.value = item.symbol
+  if (item.market_type) marketType.value = item.market_type
+  loadAnalysis()
+}
+
 const formatTime = (timestamp: number): string => {
   return new Date(timestamp).toLocaleString('zh-CN')
 }
 
 onMounted(() => {
-  loadAnalysis()
+  fetchSymbolOptions().finally(() => {
+    loadAnalysis()
+  })
 })
 </script>
 
@@ -409,5 +601,62 @@ onMounted(() => {
 
 .empty-state {
   padding: 40px 0;
+}
+
+.recent-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.recent-tags .el-tag {
+  cursor: pointer;
+}
+
+.report-note {
+  color: #606266;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.report-item {
+  background: #f8f9ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-item .label {
+  color: #909399;
+  font-size: 12px;
+}
+
+.report-item .value {
+  font-weight: 600;
+  color: #303133;
+}
+
+.report-points {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-point {
+  background: #eff6ff;
+  border-left: 3px solid #3b82f6;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #1f2937;
 }
 </style>

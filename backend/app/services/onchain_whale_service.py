@@ -49,6 +49,8 @@ class OnchainWhaleService:
             "longterm": 60.0,
         }
 
+        self.supported_assets = {"ETH"}
+
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.activity_history = defaultdict(lambda: deque(maxlen=80))
 
@@ -61,6 +63,10 @@ class OnchainWhaleService:
         mode = (trade_type or "realtime").lower()
         if mode not in self.trade_type_block_window:
             mode = "realtime"
+
+        base_asset = self._extract_base_asset(symbol)
+        if base_asset not in self.supported_assets:
+            return self._empty_metrics(symbol, mode, reason="not_supported_asset", applicable=False)
 
         timeout = aiohttp.ClientTimeout(total=25)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -372,11 +378,12 @@ class OnchainWhaleService:
             "top_balances": balances[:6],
         }
 
-    def _empty_metrics(self, symbol: str, trade_type: str, reason: str) -> Dict[str, Any]:
+    def _empty_metrics(self, symbol: str, trade_type: str, reason: str, applicable: bool = True) -> Dict[str, Any]:
         return {
             "symbol": symbol.upper(),
             "trade_type": trade_type,
             "available": False,
+            "applicable": bool(applicable),
             "reason": reason,
             "exchange_netflow": {
                 "inflow_eth": 0.0,
@@ -411,6 +418,13 @@ class OnchainWhaleService:
             },
             "updated_at": datetime.now().isoformat(),
         }
+
+    def _extract_base_asset(self, symbol: str) -> str:
+        normalized = str(symbol or "").upper().replace("-", "").replace("_", "")
+        for suffix in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD", "BTC", "ETH"):
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                return normalized[: -len(suffix)]
+        return normalized
 
 
 _onchain_whale_service: Optional[OnchainWhaleService] = None

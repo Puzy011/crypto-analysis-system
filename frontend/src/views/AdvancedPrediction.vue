@@ -10,9 +10,9 @@
       <h3>🎯 模型训练</h3>
       <div class="train-controls">
         <select v-model="selectedSymbol" class="input-select">
-          <option value="BTCUSDT">BTC/USDT</option>
-          <option value="ETHUSDT">ETH/USDT</option>
-          <option value="BNBUSDT">BNB/USDT</option>
+          <option v-for="item in symbolOptions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
         </select>
         <select v-model="tradeType" class="input-select">
           <option value="realtime">实时短线 (15m)</option>
@@ -108,6 +108,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import { SYMBOLS } from '@/constants'
 
 const selectedSymbol = ref('BTCUSDT')
 const tradeType = ref('intraday')
@@ -116,6 +117,7 @@ const isTraining = ref(false)
 const prediction = ref<any>(null)
 const topFeatures = ref<any>({})
 const predictionHistory = ref<any[]>([])
+const symbolOptions = SYMBOLS
 
 const apiBase = '/api'
 

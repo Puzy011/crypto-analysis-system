@@ -12,9 +12,9 @@
         <div class="config-item">
           <label>交易对</label>
           <select v-model="config.symbol" class="input-select">
-            <option value="BTCUSDT">BTC/USDT</option>
-            <option value="ETHUSDT">ETH/USDT</option>
-            <option value="BNBUSDT">BNB/USDT</option>
+            <option v-for="item in symbolOptions" :key="item.value" :value="item.value">
+              {{ item.label }}
+            </option>
           </select>
         </div>
         <div class="config-item">
@@ -181,6 +181,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { SYMBOLS } from '@/constants'
 
 const config = ref({
   symbol: 'BTCUSDT',
@@ -193,6 +194,7 @@ const config = ref({
 const isRunning = ref(false)
 const backtestResult = ref<any>(null)
 const strategies = ref<any[]>([])
+const symbolOptions = SYMBOLS
 
 const apiBase = '/api'
 
