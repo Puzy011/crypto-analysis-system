@@ -224,6 +224,75 @@ class WhaleAnalysisService:
         profile = dict(self.trade_profiles[mode])
         profile["trade_type"] = mode
         return profile
+
+    def _empty_large_orders(self, symbol: str, trade_type: str, reason: str) -> Dict[str, Any]:
+        profile = self.get_trade_profile(trade_type)
+        return {
+            "symbol": symbol,
+            "trade_type": profile["trade_type"],
+            "trade_type_label": profile["label"],
+            "data_source": "unavailable",
+            "reason": reason,
+            "large_order_threshold": float(self.large_order_thresholds.get(symbol, self.large_order_thresholds["DEFAULT"])),
+            "total_large_orders": 0,
+            "buy_orders": 0,
+            "sell_orders": 0,
+            "buy_volume": 0.0,
+            "sell_volume": 0.0,
+            "net_flow": 0.0,
+            "buy_ratio": 0.5,
+            "sell_ratio": 0.5,
+            "direction": "neutral",
+            "direction_label": "⚪ 数据不足",
+            "large_orders": [],
+            "analyzed_at": datetime.now().isoformat(),
+        }
+
+    def _empty_order_flow(self, symbol: str, trade_type: str, reason: str) -> Dict[str, Any]:
+        profile = self.get_trade_profile(trade_type)
+        return {
+            "symbol": symbol,
+            "trade_type": profile["trade_type"],
+            "trade_type_label": profile["label"],
+            "flow_state": "balanced",
+            "flow_label": "⚪ 数据不足",
+            "average_volume": 0.0,
+            "volume_spike_ratio": 0.0,
+            "order_imbalance": 0.0,
+            "combined_imbalance": 0.0,
+            "book_imbalance": 0.0,
+            "book_buy_notional": 0.0,
+            "book_sell_notional": 0.0,
+            "net_buy_pressure": 0.0,
+            "aggressive_buy_ratio": 0.5,
+            "cvd_change": 0.0,
+            "buy_dominance": 0.5,
+            "sell_dominance": 0.5,
+            "data_source": "unavailable",
+            "reason": reason,
+            "analyzed_at": datetime.now().isoformat(),
+        }
+
+    def _empty_phase_detection(self, symbol: str, trade_type: str, reason: str) -> Dict[str, Any]:
+        profile = self.get_trade_profile(trade_type)
+        return {
+            "symbol": symbol,
+            "trade_type": profile["trade_type"],
+            "trade_type_label": profile["label"],
+            "phase": "unknown",
+            "phase_label": "⚪ 数据不足",
+            "confidence": 0.0,
+            "price_range": 0.0,
+            "volume_ratio": 0.0,
+            "price_trend": 0.0,
+            "signals": [reason],
+            "indicators": {
+                "price_stability": 0.0,
+                "volume_confirmation": 0.0,
+                "trend_strength": 0.0,
+            },
+            "analyzed_at": datetime.now().isoformat(),
+        }
     
     def detect_large_orders(
         self,
@@ -239,7 +308,7 @@ class WhaleAnalysisService:
         """
         profile = self.get_trade_profile(trade_type)
         if trades is None and klines is None:
-            return self._generate_mock_large_orders(symbol, profile["trade_type"])
+            return self._empty_large_orders(symbol, profile["trade_type"], "无成交与K线数据")
 
         large_orders = []
         buy_volume = 0.0
@@ -462,12 +531,12 @@ class WhaleAnalysisService:
         """
         profile = self.get_trade_profile(trade_type)
         if klines is None or len(klines) < 20:
-            return self._generate_mock_order_flow(symbol, profile["trade_type"])
+            return self._empty_order_flow(symbol, profile["trade_type"], "K线样本不足")
         
         df = klines.copy()
         for col in ["open", "high", "low", "close", "volume"]:
             if col not in df.columns:
-                return self._generate_mock_order_flow(symbol, profile["trade_type"])
+                return self._empty_order_flow(symbol, profile["trade_type"], f"K线缺少字段: {col}")
         if "quoteVolume" not in df.columns:
             df["quoteVolume"] = df["close"] * df["volume"]
         if "takerBuyQuote" not in df.columns:
@@ -622,7 +691,7 @@ class WhaleAnalysisService:
         profile = self.get_trade_profile(trade_type)
         min_bars = max(30, int(profile["phase_mid_window"]) + 2)
         if klines is None or len(klines) < min_bars:
-            return self._generate_mock_phase_detection(symbol, profile["trade_type"])
+            return self._empty_phase_detection(symbol, profile["trade_type"], "阶段识别样本不足")
         
         df = klines.copy()
         prices = df["close"].astype(float).values

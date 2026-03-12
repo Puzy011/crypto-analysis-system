@@ -10,7 +10,7 @@ export function confirmDialog(
   message: string,
   title: string = '确认',
   options: any = {}
-): Promise<void> {
+): Promise<any> {
   return ElMessageBox.confirm(message, title, {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -25,7 +25,7 @@ export function confirmDialog(
 export function confirmDelete(
   message: string = '此操作将永久删除该数据，是否继续？',
   title: string = '删除确认'
-): Promise<void> {
+): Promise<any> {
   return ElMessageBox.confirm(message, title, {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
@@ -41,7 +41,7 @@ export function alertDialog(
   message: string,
   title: string = '提示',
   type: 'success' | 'warning' | 'info' | 'error' = 'info'
-): Promise<void> {
+): Promise<any> {
   return ElMessageBox.alert(message, title, {
     confirmButtonText: '确定',
     type

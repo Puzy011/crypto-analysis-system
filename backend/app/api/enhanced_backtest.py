@@ -9,10 +9,11 @@ import pandas as pd
 from datetime import datetime
 
 from app.services.enhanced_backtest_service import get_enhanced_backtest_service
-from app.services.mock_binance_service import get_mock_binance_service
+from app.services.binance_service import BinanceService
 
 
 router = APIRouter(prefix="/api/enhanced-backtest", tags=["增强回测"])
+binance_service = BinanceService()
 
 
 class BacktestRequest(BaseModel):
@@ -32,10 +33,9 @@ async def run_backtest(
     """
     try:
         backtest_service = get_enhanced_backtest_service()
-        mock_service = get_mock_binance_service()
         
         # 获取 K线数据
-        klines = mock_service.get_klines(
+        klines = await binance_service.get_klines(
             symbol=request.symbol,
             interval=request.interval,
             limit=request.limit
@@ -125,9 +125,8 @@ async def quick_backtest_test(
     """
     try:
         backtest_service = get_enhanced_backtest_service()
-        mock_service = get_mock_binance_service()
         
-        klines = mock_service.get_klines(
+        klines = await binance_service.get_klines(
             symbol=symbol,
             interval="1h",
             limit=300

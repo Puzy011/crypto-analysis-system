@@ -136,6 +136,74 @@
       </div>
     </div>
 
+    <!-- 分析可用性 -->
+    <div class="card" v-if="whaleAnalysis?.analysis_health">
+      <h3>🧪 分析可用性</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>分析模式</span>
+          <strong>{{ whaleAnalysis.analysis_health.mode_label }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>数据可信度</span>
+          <strong>{{ ((whaleAnalysis.analysis_health.quality_score || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>成交样本</span>
+          <strong>{{ whaleAnalysis.analysis_health.input_snapshot?.trades_count || 0 }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>盘口深度</span>
+          <strong>{{ whaleAnalysis.analysis_health.input_snapshot?.order_book_depth || 0 }}</strong>
+        </div>
+      </div>
+      <div class="signal-points">
+        <div class="signal-point">{{ whaleAnalysis.analysis_health.summary }}</div>
+        <div
+          v-for="(blocker, idx) in whaleAnalysis.analysis_health.blockers || []"
+          :key="`blocker-${idx}`"
+          class="signal-point"
+        >
+          限制: {{ blocker }}
+        </div>
+      </div>
+    </div>
+
+    <!-- 执行计划 -->
+    <div class="card" v-if="whaleAnalysis?.action_plan">
+      <h3>🎯 执行计划</h3>
+      <div class="smart-grid">
+        <div class="smart-item">
+          <span>交易偏向</span>
+          <strong>{{ whaleAnalysis.action_plan.bias_label }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>可执行性</span>
+          <strong>{{ whaleAnalysis.action_plan.actionable ? '可执行' : '先观望' }}</strong>
+        </div>
+        <div class="smart-item">
+          <span>计划置信度</span>
+          <strong>{{ ((whaleAnalysis.action_plan.confidence || 0) * 100).toFixed(0) }}%</strong>
+        </div>
+        <div class="smart-item">
+          <span>仓位建议</span>
+          <strong>{{ whaleAnalysis.action_plan.position_size_advice }}</strong>
+        </div>
+      </div>
+      <div class="signal-points">
+        <div class="signal-point">{{ whaleAnalysis.action_plan.entry }}</div>
+        <div class="signal-point">{{ whaleAnalysis.action_plan.stop_loss }}</div>
+        <div class="signal-point">{{ whaleAnalysis.action_plan.take_profit }}</div>
+        <div
+          v-for="(trigger, idx) in whaleAnalysis.action_plan.trigger_points || []"
+          :key="`trigger-${idx}`"
+          class="signal-point"
+        >
+          触发条件: {{ trigger }}
+        </div>
+      </div>
+    </div>
+
     <!-- 庄家指标矩阵 -->
     <div class="card" v-if="indicatorMatrix">
       <h3>🧠 庄家指标矩阵</h3>
@@ -570,7 +638,7 @@ const fetchWhaleAnalysis = async () => {
 
 const fetchSymbolOptions = async () => {
   try {
-    const response = await fetch('/api/market/symbols?quote_asset=USDT&limit=120')
+    const response = await fetch('/api/market/symbols?quote_asset=USDT&limit=500')
     if (!response.ok) return
     const data = await response.json()
     const rows = Array.isArray(data?.data) ? data.data : []

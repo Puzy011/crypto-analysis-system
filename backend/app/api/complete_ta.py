@@ -8,10 +8,11 @@ import pandas as pd
 from datetime import datetime
 
 from app.services.complete_ta_service import get_complete_ta_service
-from app.services.mock_binance_service import get_mock_binance_service
+from app.services.binance_service import BinanceService
 
 
 router = APIRouter(prefix="/api/complete-ta", tags=["完整技术指标"])
+binance_service = BinanceService()
 
 
 @router.get("/indicators/{symbol}")
@@ -25,10 +26,9 @@ async def get_complete_indicators(
     """
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
         
         # 获取 K线数据
-        klines = mock_service.get_klines(
+        klines = await binance_service.get_klines(
             symbol=symbol,
             interval=interval,
             limit=limit
@@ -71,9 +71,8 @@ async def get_latest_indicators(
     """
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
         
-        klines = mock_service.get_klines(
+        klines = await binance_service.get_klines(
             symbol=symbol,
             interval="1h",
             limit=200
@@ -104,9 +103,7 @@ async def get_sma(
     """获取 SMA"""
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
-        
-        klines = mock_service.get_klines(symbol=symbol, limit=200)
+        klines = await binance_service.get_klines(symbol=symbol, limit=200)
         df = pd.DataFrame(klines)
         
         sma = ta_service.sma(df["close"], period)
@@ -130,9 +127,7 @@ async def get_ema(
     """获取 EMA"""
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
-        
-        klines = mock_service.get_klines(symbol=symbol, limit=200)
+        klines = await binance_service.get_klines(symbol=symbol, limit=200)
         df = pd.DataFrame(klines)
         
         ema = ta_service.ema(df["close"], period)
@@ -156,9 +151,7 @@ async def get_rsi(
     """获取 RSI"""
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
-        
-        klines = mock_service.get_klines(symbol=symbol, limit=200)
+        klines = await binance_service.get_klines(symbol=symbol, limit=200)
         df = pd.DataFrame(klines)
         
         rsi = ta_service.rsi(df["close"], period)
@@ -181,9 +174,7 @@ async def get_macd(
     """获取 MACD"""
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
-        
-        klines = mock_service.get_klines(symbol=symbol, limit=200)
+        klines = await binance_service.get_klines(symbol=symbol, limit=200)
         df = pd.DataFrame(klines)
         
         macd_data = ta_service.macd(df["close"])
@@ -211,9 +202,7 @@ async def get_bollinger_bands(
     """获取布林带"""
     try:
         ta_service = get_complete_ta_service()
-        mock_service = get_mock_binance_service()
-        
-        klines = mock_service.get_klines(symbol=symbol, limit=200)
+        klines = await binance_service.get_klines(symbol=symbol, limit=200)
         df = pd.DataFrame(klines)
         
         bb = ta_service.bollinger_bands(df["close"], period, std_dev)

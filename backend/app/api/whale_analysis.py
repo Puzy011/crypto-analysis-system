@@ -5,6 +5,7 @@
 import asyncio
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
+from typing import Any, Dict, List
 import pandas as pd
 
 from app.services.whale_analysis_service import (
@@ -116,6 +117,182 @@ async def _get_onchain_metrics_safe(symbol: str, trade_type: str):
             },
             "updated_at": datetime.now().isoformat(),
         }
+
+
+def _build_analysis_health(
+    data_quality: Dict[str, Any],
+    large_orders: Dict[str, Any],
+    order_flow: Dict[str, Any],
+    onchain_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """输出分析可用性与降级原因，避免在弱数据条件下给出过度结论。"""
+    quality_score = float((data_quality or {}).get("quality_score", 0.0) or 0.0)
+    sources = (data_quality or {}).get("sources", {}) or {}
+    trades_count = int(((sources.get("agg_trades", {}) or {}).get("count", 0) or 0))
+    order_book_depth = int(((sources.get("order_book", {}) or {}).get("depth_levels", 0) or 0))
+    derivatives_enabled = bool(((sources.get("derivatives", {}) or {}).get("enabled", False)))
+    onchain_available = bool((onchain_metrics or {}).get("available", False))
+
+    blockers: List[str] = []
+    if trades_count < 80:
+        blockers.append(f"逐笔成交样本不足（当前 {trades_count}）")
+    if order_book_depth < 8:
+        blockers.append(f"订单簿深度不足（当前 {order_book_depth} 档）")
+    if not derivatives_enabled:
+        blockers.append("合约指标缺失（资金费率/OI/多空比不可用）")
+    if not onchain_available:
+        blockers.append("链上真实指标不可用")
+
+    # 低质量 + 核心微观结构缺失时，判定为降级模式
+    is_degraded = bool(quality_score < 0.55 or (trades_count < 50 and order_book_depth < 5))
+
+    if is_degraded:
+        mode = "degraded"
+        mode_label = "降级分析"
+        summary = "关键微观结构数据不足，当前结论仅供参考，不建议重仓。"
+    elif quality_score < 0.8:
+        mode = "cautious"
+        mode_label = "谨慎可用"
+        summary = "数据可用但完整性一般，建议轻仓并等待确认信号。"
+    else:
+        mode = "full"
+        mode_label = "完整分析"
+        summary = "数据完整度较好，可按信号执行但仍需风控。"
+
+    return {
+        "mode": mode,
+        "mode_label": mode_label,
+        "is_degraded": is_degraded,
+        "quality_score": quality_score,
+        "summary": summary,
+        "blockers": blockers,
+        "input_snapshot": {
+            "trades_count": trades_count,
+            "order_book_depth": order_book_depth,
+            "onchain_available": onchain_available,
+            "derivatives_enabled": derivatives_enabled,
+            "large_order_source": large_orders.get("data_source", "unknown"),
+            "order_flow_source": order_flow.get("data_source", "unknown"),
+        },
+    }
+
+
+def _build_action_plan(
+    profile: Dict[str, Any],
+    aice_summary: Dict[str, Any],
+    large_orders: Dict[str, Any],
+    order_flow: Dict[str, Any],
+    phase: Dict[str, Any],
+    indicator_matrix: Dict[str, Any],
+    analysis_health: Dict[str, Any],
+) -> Dict[str, Any]:
+    """基于当前结果输出可执行建议，明确触发条件与失效条件。"""
+    summary_block = (indicator_matrix or {}).get("summary", {}) or {}
+    matrix_score = float(summary_block.get("smart_money_score", 0.0) or 0.0)
+    combined_imbalance = float(order_flow.get("combined_imbalance", order_flow.get("order_imbalance", 0.0)) or 0.0)
+    phase_name = str(phase.get("phase", "normal"))
+    quality_score = float(analysis_health.get("quality_score", 0.0) or 0.0)
+
+    bullish_votes = 0
+    bearish_votes = 0
+    reasons: List[str] = []
+
+    if large_orders.get("direction") == "inflow":
+        bullish_votes += 1
+        reasons.append("大单净流入")
+    elif large_orders.get("direction") == "outflow":
+        bearish_votes += 1
+        reasons.append("大单净流出")
+
+    if combined_imbalance > 0.08:
+        bullish_votes += 1
+        reasons.append(f"订单流偏多（{combined_imbalance:.3f}）")
+    elif combined_imbalance < -0.08:
+        bearish_votes += 1
+        reasons.append(f"订单流偏空（{combined_imbalance:.3f}）")
+
+    if matrix_score > 20:
+        bullish_votes += 1
+        reasons.append(f"SmartMoney得分偏多（{matrix_score:.1f}）")
+    elif matrix_score < -20:
+        bearish_votes += 1
+        reasons.append(f"SmartMoney得分偏空（{matrix_score:.1f}）")
+
+    if phase_name in {"accumulation", "pump"}:
+        bullish_votes += 1
+        reasons.append(f"阶段识别为 {phase.get('phase_label', phase_name)}")
+    elif phase_name in {"distribution", "washout"}:
+        bearish_votes += 1
+        reasons.append(f"阶段识别为 {phase.get('phase_label', phase_name)}")
+
+    if bullish_votes >= bearish_votes + 2:
+        bias = "long"
+        bias_label = "顺势偏多"
+    elif bearish_votes >= bullish_votes + 2:
+        bias = "short"
+        bias_label = "顺势偏空"
+    else:
+        bias = "neutral"
+        bias_label = "观望等待"
+
+    actionable = bool(not analysis_health.get("is_degraded", False) and bias != "neutral")
+    confidence = min(0.95, max(0.2, quality_score * (0.55 + 0.1 * max(bullish_votes, bearish_votes))))
+
+    entry_price = aice_summary.get("entry_price")
+    stop_loss = aice_summary.get("stop_loss")
+    take_profit = aice_summary.get("take_profit")
+    entry_text = f"参考入场位 {entry_price:.4f}" if isinstance(entry_price, (int, float)) else "等待形态确认后入场"
+    sl_text = f"失效位 {stop_loss:.4f}" if isinstance(stop_loss, (int, float)) else "固定风险后入场"
+    tp_text = f"目标位 {take_profit:.4f}" if isinstance(take_profit, (int, float)) else "分批止盈"
+
+    if analysis_health.get("mode") == "full":
+        size_advice = "中等仓位（30%-50%）"
+    elif analysis_health.get("mode") == "cautious":
+        size_advice = "轻仓试单（15%-30%）"
+    else:
+        size_advice = "观望或极轻仓（<15%）"
+
+    trigger_points: List[str] = []
+    if bias == "long":
+        trigger_points.extend(
+            [
+                "订单流继续维持正不平衡且主动买盘占优",
+                "价格回踩不破入场区域并重新放量",
+            ]
+        )
+    elif bias == "short":
+        trigger_points.extend(
+            [
+                "订单流继续维持负不平衡且主动卖盘占优",
+                "反弹受阻并出现放量回落",
+            ]
+        )
+    else:
+        trigger_points.extend(
+            [
+                "等待大单方向与订单流方向重新同向",
+                "等待SmartMoney得分绝对值突破 25 再执行",
+            ]
+        )
+
+    return {
+        "trade_type": profile.get("trade_type", "realtime"),
+        "trade_type_label": profile.get("label", "实时短线"),
+        "bias": bias,
+        "bias_label": bias_label,
+        "actionable": actionable,
+        "confidence": float(confidence),
+        "position_size_advice": size_advice,
+        "entry": entry_text,
+        "stop_loss": sl_text,
+        "take_profit": tp_text,
+        "trigger_points": trigger_points,
+        "reasons": reasons[:6],
+        "votes": {
+            "bullish_votes": bullish_votes,
+            "bearish_votes": bearish_votes,
+        },
+    }
 
 
 @router.get("/trade-modes")
@@ -290,6 +467,19 @@ async def get_full_whale_analysis(
             onchain_metrics=onchain_metrics,
             trade_type=profile["trade_type"],
         )
+        data_quality = whale_service.build_data_quality_report(
+            symbol=symbol,
+            klines=df,
+            trades=agg_trades,
+            order_book=order_book,
+            derivatives=derivatives,
+        )
+        analysis_health = _build_analysis_health(
+            data_quality=data_quality,
+            large_orders=large_orders,
+            order_flow=order_flow,
+            onchain_metrics=onchain_metrics,
+        )
         aice_summary = whale_service.build_aice_style_summary(
             symbol=symbol,
             klines=df,
@@ -316,6 +506,21 @@ async def get_full_whale_analysis(
             trades=agg_trades,
             order_book=order_book,
             derivatives=derivatives,
+        )
+        analysis_health = _build_analysis_health(
+            data_quality=data_quality,
+            large_orders=large_orders,
+            order_flow=order_flow,
+            onchain_metrics=onchain_metrics,
+        )
+        action_plan = _build_action_plan(
+            profile=profile,
+            aice_summary=aice_summary,
+            large_orders=large_orders,
+            order_flow=order_flow,
+            phase=phase,
+            indicator_matrix=indicator_matrix,
+            analysis_health=analysis_health,
         )
         
         # 综合判断
@@ -370,13 +575,23 @@ async def get_full_whale_analysis(
             risk_level = "bullish" if bullish_signals >= bearish_signals else "neutral"
             risk_emoji = "🟢" if risk_level == "bullish" else "🟡"
             risk_message = "主力风险偏低，可跟踪"
-        
+
+        analysis_mode = "degraded" if analysis_health.get("is_degraded", False) else "ai"
+        trade_advice = aice_summary.get("trade_advice", "等待更清晰信号")
+        if analysis_mode == "degraded":
+            risk_level = "neutral"
+            risk_emoji = "🟡"
+            risk_message = "数据源受限，当前为降级分析"
+            trade_advice = "关键数据不足，建议观望或极轻仓试单，等待真实成交和盘口恢复。"
+        elif analysis_health.get("mode") == "cautious":
+            trade_advice = f"{trade_advice}（数据完整性一般，建议轻仓执行）"
+
         return {
             "success": True,
             "symbol": symbol,
             "trade_type": profile["trade_type"],
             "trade_type_label": profile["label"],
-            "analysis_mode": "ai",
+            "analysis_mode": analysis_mode,
             "overall": {
                 "risk_level": risk_level,
                 "risk_emoji": risk_emoji,
@@ -386,7 +601,7 @@ async def get_full_whale_analysis(
             },
             "whale_direction": aice_summary.get("whale_direction", "震荡博弈"),
             "whale_action": aice_summary.get("whale_action", "主力观望"),
-            "trade_advice": aice_summary.get("trade_advice", "等待更清晰信号"),
+            "trade_advice": trade_advice,
             "risk_control": risk_control,
             "signal_explanation": aice_summary.get("signal_explanation", []),
             "summary": aice_summary.get("summary", ""),
@@ -397,6 +612,8 @@ async def get_full_whale_analysis(
             "derivatives": derivatives,
             "onchain_metrics": onchain_metrics,
             "data_quality": data_quality,
+            "analysis_health": analysis_health,
+            "action_plan": action_plan,
             "references": whale_service.get_research_references(),
             "entry_price": aice_summary.get("entry_price"),
             "stop_loss": aice_summary.get("stop_loss"),
@@ -492,6 +709,8 @@ async def get_whale_alerts_api(
             "derivatives": derivatives,
             "onchain_metrics": onchain_metrics,
             "indicator_matrix": indicator_matrix,
+            "data_quality": data_quality,
+            "analysis_health": analysis_health,
             "alerts": alerts,
             "alert_count": len(alerts),
             "timestamp": datetime.now().isoformat()
