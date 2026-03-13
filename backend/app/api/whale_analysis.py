@@ -646,6 +646,46 @@ async def get_full_whale_analysis(
             derivatives=derivatives,
             trade_type=profile["trade_type"],
         )
+
+        # 新增：持续性大户追踪
+        persistent_whales = whale_service.track_persistent_whales(
+            symbol=symbol,
+            trades=agg_trades,
+            large_orders=large_orders,
+            window_minutes=60,
+        )
+
+        # 新增：聪明钱估算
+        smart_money_distribution = whale_service.estimate_smart_money_distribution(
+            symbol=symbol,
+            trades=agg_trades,
+            klines=df,
+            large_orders=large_orders,
+        )
+
+        # 新增：Volume Profile
+        volume_profile = whale_service.calculate_volume_profile(
+            klines=df,
+            bins=50,
+        )
+
+        # 新增：订单簿不平衡
+        order_book_imbalance = whale_service.calculate_order_book_imbalance(
+            order_book=order_book,
+            depth_levels=10,
+        )
+
+        # 新增：流动性墙检测
+        liquidity_walls = whale_service.detect_liquidity_walls(
+            order_book=order_book,
+            threshold_multiplier=3.0,
+        )
+
+        # 新增：主力成本估算
+        whale_cost_basis = whale_service.estimate_whale_cost_basis(
+            large_orders=large_orders,
+        )
+
         data_quality = whale_service.build_data_quality_report(
             symbol=symbol,
             klines=df,
@@ -726,15 +766,15 @@ async def get_full_whale_analysis(
 
         analysis_mode = "degraded" if analysis_health.get("is_degraded", False) else "ai"
         trade_advice = aice_summary.get("trade_advice", "等待更清晰信号")
-    if analysis_mode == "degraded":
-        risk_level = "neutral"
-        risk_emoji = "🟡"
-        risk_message = "数据源受限，当前为降级分析"
-        trade_advice = "关键数据不足，建议观望或极轻仓试单，等待真实成交和盘口恢复。"
-    elif analysis_health.get("mode") == "cautious":
-        trade_advice = f"{trade_advice}（数据完整性一般，建议轻仓执行）"
+        if analysis_mode == "degraded":
+            risk_level = "neutral"
+            risk_emoji = "🟡"
+            risk_message = "数据源受限，当前为降级分析"
+            trade_advice = "关键数据不足，建议观望或极轻仓试单，等待真实成交和盘口恢复。"
+        elif analysis_health.get("mode") == "cautious":
+            trade_advice = f"{trade_advice}（数据完整性一般，建议轻仓执行）"
 
-    generated_at = datetime.now().isoformat()
+        generated_at = datetime.now().isoformat()
         report = _build_report_block(
             profile=profile,
             market_type=normalized_market,
@@ -753,36 +793,36 @@ async def get_full_whale_analysis(
             entry_price=aice_summary.get("entry_price"),
             stop_loss=aice_summary.get("stop_loss"),
             take_profit=aice_summary.get("take_profit"),
-        generated_at=generated_at,
-    )
+            generated_at=generated_at,
+        )
 
-    def _format_level(value: Any) -> str:
-        if isinstance(value, (int, float)):
-            if abs(value) >= 1:
-                return f"{value:.2f}"
-            return f"{value:.6f}"
-        return "-"
+        def _format_level(value: Any) -> str:
+            if isinstance(value, (int, float)):
+                if abs(value) >= 1:
+                    return f"{value:.2f}"
+                return f"{value:.6f}"
+            return "-"
 
-    share_text = (
-        f"{symbol} {market_label}·{profile['label']} | "
-        f"方向: {report.get('direction')} | 动作: {report.get('action')} | "
-        f"建议: {report.get('advice')} | 风险: {report.get('risk_control')} | "
-        f"入场: {_format_level(aice_summary.get('entry_price'))} / "
-        f"止损: {_format_level(aice_summary.get('stop_loss'))} / "
-        f"止盈: {_format_level(aice_summary.get('take_profit'))} | "
-        f"时间: {generated_at[:19]}"
-    )
+        share_text = (
+            f"{symbol} {market_label}·{profile['label']} | "
+            f"方向: {report.get('direction')} | 动作: {report.get('action')} | "
+            f"建议: {report.get('advice')} | 风险: {report.get('risk_control')} | "
+            f"入场: {_format_level(aice_summary.get('entry_price'))} / "
+            f"止损: {_format_level(aice_summary.get('stop_loss'))} / "
+            f"止盈: {_format_level(aice_summary.get('take_profit'))} | "
+            f"时间: {generated_at[:19]}"
+        )
 
-    recent_queries = whale_service.record_query(
-        symbol=symbol,
-        trade_type=profile["trade_type"],
-        market_type=normalized_market,
-    )
+        recent_queries = whale_service.record_query(
+            symbol=symbol,
+            trade_type=profile["trade_type"],
+            market_type=normalized_market,
+        )
 
-    return {
-        "success": True,
-        "symbol": symbol,
-        "market_type": normalized_market,
+        return {
+            "success": True,
+            "symbol": symbol,
+            "market_type": normalized_market,
             "market_label": market_label,
             "trade_type": profile["trade_type"],
             "trade_type_label": profile["label"],
@@ -811,20 +851,27 @@ async def get_full_whale_analysis(
             "cost_band": cost_band,
             "onchain_metrics": onchain_metrics,
             "data_quality": data_quality,
-        "analysis_health": analysis_health,
-        "action_plan": action_plan,
-        "report": report,
-        "share_text": share_text,
-        "recent_queries": recent_queries,
-        "references": whale_service.get_research_references(),
-        "entry_price": aice_summary.get("entry_price"),
-        "stop_loss": aice_summary.get("stop_loss"),
+            "analysis_health": analysis_health,
+            "action_plan": action_plan,
+            "report": report,
+            "share_text": share_text,
+            "recent_queries": recent_queries,
+            "references": whale_service.get_research_references(),
+            "entry_price": aice_summary.get("entry_price"),
+            "stop_loss": aice_summary.get("stop_loss"),
             "take_profit": aice_summary.get("take_profit"),
             "large_orders": large_orders,
             "order_flow": order_flow,
             "manipulation_phase": phase,
             "alerts": alerts,
             "alert_count": len(alerts),
+            # 新增优化指标
+            "persistent_whales": persistent_whales,
+            "smart_money_distribution": smart_money_distribution,
+            "volume_profile": volume_profile,
+            "order_book_imbalance": order_book_imbalance,
+            "liquidity_walls": liquidity_walls,
+            "whale_cost_basis": whale_cost_basis,
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:

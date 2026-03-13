@@ -101,10 +101,10 @@ export const CHART_COLORS = {
 
 // 刷新间隔（毫秒）
 export const REFRESH_INTERVALS = {
-  realtime: 5000,     // 实时数据：5秒
-  market: 10000,      // 市场数据：10秒
-  prediction: 30000,  // 预测数据：30秒
-  sentiment: 60000    // 舆情数据：60秒
+  realtime: 10000,    // 实时数据：10秒（1分钟6次）
+  market: 30000,      // 市场数据：30秒（1分钟2次）
+  prediction: 60000,  // 预测数据：60秒（1分钟1次）
+  sentiment: 60000    // 舆情数据：60秒（1分钟1次）
 }
 
 // 分页配置

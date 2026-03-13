@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile app/services/whale_analysis_service.py)",
+      "Bash(python -m py_compile app/api/whale_analysis.py)"
+    ]
+  }
+}

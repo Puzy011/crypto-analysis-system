@@ -1892,6 +1892,434 @@ class WhaleAnalysisService:
             },
         }
 
+    def track_persistent_whales(
+        self,
+        symbol: str,
+        trades: List[Dict[str, Any]],
+        large_orders: Dict[str, Any],
+        window_minutes: int = 60,
+    ) -> Dict[str, Any]:
+        """
+        追踪持续性大户行为
+        识别在时间窗口内多次出现的大单，判断是否为持续建仓
+        """
+        if not trades or not large_orders.get("large_orders"):
+            return {
+                "persistent_whale_score": 0.0,
+                "accumulation_zones": [],
+                "whale_cost_basis": None,
+                "interpretation": "无足够大单数据",
+            }
+
+        large_order_list = large_orders.get("large_orders", [])
+        if not large_order_list:
+            return {
+                "persistent_whale_score": 0.0,
+                "accumulation_zones": [],
+                "whale_cost_basis": None,
+                "interpretation": "无大单检测到",
+            }
+
+        # 按价格区间分组（1% 价格区间）
+        price_zones = defaultdict(lambda: {"buy_count": 0, "sell_count": 0, "buy_volume": 0.0, "sell_volume": 0.0, "timestamps": []})
+
+        for order in large_order_list:
+            price = float(order.get("price", 0))
+            amount = float(order.get("amount", 0))
+            side = order.get("side", "buy")
+            timestamp = order.get("timestamp", 0)
+
+            # 价格区间（向下取整到 1%）
+            zone_key = int(price * 100) / 100.0
+
+            if side == "buy":
+                price_zones[zone_key]["buy_count"] += 1
+                price_zones[zone_key]["buy_volume"] += amount
+            else:
+                price_zones[zone_key]["sell_count"] += 1
+                price_zones[zone_key]["sell_volume"] += amount
+
+            price_zones[zone_key]["timestamps"].append(timestamp)
+
+        # 识别"持续建仓区间"（多次大单 + 同方向）
+        accumulation_zones = []
+        for zone_price, data in price_zones.items():
+            total_count = data["buy_count"] + data["sell_count"]
+            if total_count >= 3:  # 至少 3 次大单
+                net_volume = data["buy_volume"] - data["sell_volume"]
+                direction = "buy" if net_volume > 0 else "sell"
+
+                accumulation_zones.append({
+                    "price": zone_price,
+                    "direction": direction,
+                    "order_count": total_count,
+                    "net_volume": abs(net_volume),
+                    "buy_count": data["buy_count"],
+                    "sell_count": data["sell_count"],
+                })
+
+        # 计算持续性得分
+        persistent_score = 0.0
+        if accumulation_zones:
+            # 得分 = 区间数量 * 平均订单数
+            avg_orders = np.mean([z["order_count"] for z in accumulation_zones])
+            persistent_score = min(100.0, len(accumulation_zones) * avg_orders * 5)
+
+        # 估算大户成本价（加权平均）
+        whale_cost_basis = None
+        buy_orders = [o for o in large_order_list if o.get("side") == "buy"]
+        if buy_orders:
+            total_amount = sum(o.get("amount", 0) for o in buy_orders)
+            if total_amount > 0:
+                weighted_price = sum(o.get("price", 0) * o.get("amount", 0) for o in buy_orders) / total_amount
+                whale_cost_basis = float(weighted_price)
+
+        interpretation = ""
+        if persistent_score > 60:
+            interpretation = "检测到持续性大户建仓行为"
+        elif persistent_score > 30:
+            interpretation = "有一定持续性大单，但不够集中"
+        else:
+            interpretation = "大单较为分散，无明显持续建仓"
+
+        return {
+            "persistent_whale_score": float(persistent_score),
+            "accumulation_zones": sorted(accumulation_zones, key=lambda x: x["net_volume"], reverse=True)[:5],
+            "whale_cost_basis": whale_cost_basis,
+            "interpretation": interpretation,
+        }
+
+    def estimate_smart_money_distribution(
+        self,
+        symbol: str,
+        trades: List[Dict[str, Any]],
+        klines: pd.DataFrame,
+        large_orders: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        估算聪明钱分布（基于大单胜率和逆势行为）
+        """
+        if klines.empty or not trades:
+            return {
+                "estimated_smart_money_long_pct": 0.5,
+                "estimated_smart_money_short_pct": 0.5,
+                "smart_money_win_rate": 0.0,
+                "confidence": "insufficient_data",
+            }
+
+        large_order_list = large_orders.get("large_orders", [])
+        if not large_order_list:
+            return {
+                "estimated_smart_money_long_pct": 0.5,
+                "estimated_smart_money_short_pct": 0.5,
+                "smart_money_win_rate": 0.0,
+                "confidence": "no_large_orders",
+            }
+
+        # 计算大单胜率（大单后价格是否朝大单方向移动）
+        wins = 0
+        total = 0
+        smart_buy_volume = 0.0
+        smart_sell_volume = 0.0
+
+        for i, order in enumerate(large_order_list):
+            order_price = float(order.get("price", 0))
+            order_side = order.get("side", "buy")
+            order_timestamp = order.get("timestamp", 0)
+            order_amount = float(order.get("amount", 0))
+
+            # 找到大单后的价格变化
+            future_orders = [o for o in large_order_list[i+1:i+6] if o.get("timestamp", 0) > order_timestamp]
+            if not future_orders:
+                continue
+
+            # 计算后续平均价格
+            avg_future_price = np.mean([float(o.get("price", 0)) for o in future_orders])
+
+            # 判断是否"胜利"
+            if order_side == "buy" and avg_future_price > order_price:
+                wins += 1
+                smart_buy_volume += order_amount
+            elif order_side == "sell" and avg_future_price < order_price:
+                wins += 1
+                smart_sell_volume += order_amount
+
+            total += 1
+
+        win_rate = float(wins / total) if total > 0 else 0.0
+
+        # 估算聪明钱占比
+        total_smart_volume = smart_buy_volume + smart_sell_volume
+        if total_smart_volume > 0:
+            smart_long_pct = smart_buy_volume / total_smart_volume
+            smart_short_pct = smart_sell_volume / total_smart_volume
+        else:
+            smart_long_pct = 0.5
+            smart_short_pct = 0.5
+
+        confidence = "estimated"
+        if win_rate > 0.65 and total >= 10:
+            confidence = "high_confidence_estimated"
+        elif total < 5:
+            confidence = "low_sample_size"
+
+        return {
+            "estimated_smart_money_long_pct": float(smart_long_pct),
+            "estimated_smart_money_short_pct": float(smart_short_pct),
+            "smart_money_win_rate": float(win_rate),
+            "sample_size": total,
+            "confidence": confidence,
+            "interpretation": f"聪明钱胜率 {win_rate*100:.1f}%，{'较高' if win_rate > 0.65 else '一般' if win_rate > 0.5 else '较低'}",
+        }
+
+    def calculate_volume_profile(
+        self,
+        klines: pd.DataFrame,
+        bins: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        计算 Volume Profile（成交量分布）
+        识别 POC（Point of Control）和 Value Area
+        """
+        if klines.empty:
+            return {
+                "poc_price": None,
+                "value_area_high": None,
+                "value_area_low": None,
+                "volume_profile": [],
+            }
+
+        price_min = float(klines["low"].min())
+        price_max = float(klines["high"].max())
+
+        if price_max <= price_min:
+            return {
+                "poc_price": None,
+                "value_area_high": None,
+                "value_area_low": None,
+                "volume_profile": [],
+            }
+
+        price_bins = np.linspace(price_min, price_max, bins + 1)
+
+        volume_profile = []
+        for i in range(len(price_bins) - 1):
+            bin_low = float(price_bins[i])
+            bin_high = float(price_bins[i + 1])
+            bin_mid = (bin_low + bin_high) / 2
+
+            # 统计该价格区间的成交量
+            mask = (klines["low"] <= bin_high) & (klines["high"] >= bin_low)
+            volume = float(klines.loc[mask, "volume"].sum())
+
+            volume_profile.append({
+                "price": bin_mid,
+                "price_low": bin_low,
+                "price_high": bin_high,
+                "volume": volume,
+            })
+
+        # 找到 POC（成交量最大的价格）
+        if not volume_profile:
+            return {
+                "poc_price": None,
+                "value_area_high": None,
+                "value_area_low": None,
+                "volume_profile": [],
+            }
+
+        volume_profile.sort(key=lambda x: x["volume"], reverse=True)
+        poc = volume_profile[0]
+        poc_price = float(poc["price"])
+
+        # 计算 Value Area（70% 成交量区间）
+        total_volume = sum(v["volume"] for v in volume_profile)
+        target_volume = total_volume * 0.7
+
+        accumulated_volume = 0.0
+        value_area_prices = []
+        for v in volume_profile:
+            accumulated_volume += v["volume"]
+            value_area_prices.append(v["price"])
+            if accumulated_volume >= target_volume:
+                break
+
+        value_area_high = float(max(value_area_prices)) if value_area_prices else None
+        value_area_low = float(min(value_area_prices)) if value_area_prices else None
+
+        # 重新按价格排序
+        volume_profile.sort(key=lambda x: x["price"])
+
+        return {
+            "poc_price": poc_price,
+            "value_area_high": value_area_high,
+            "value_area_low": value_area_low,
+            "volume_profile": volume_profile[:20],  # 只返回前 20 个区间
+            "interpretation": f"POC 在 {poc_price:.6f}，主力成本带 {value_area_low:.6f} - {value_area_high:.6f}",
+        }
+
+    def calculate_order_book_imbalance(
+        self,
+        order_book: Dict[str, Any],
+        depth_levels: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        计算订单簿不平衡度
+        """
+        bids = order_book.get("bids", [])[:depth_levels]
+        asks = order_book.get("asks", [])[:depth_levels]
+
+        if not bids or not asks:
+            return {
+                "order_book_imbalance": 0.0,
+                "bid_volume": 0.0,
+                "ask_volume": 0.0,
+                "interpretation": "订单簿数据不足",
+            }
+
+        bid_volume = sum(float(b.get("amount", 0)) for b in bids)
+        ask_volume = sum(float(a.get("amount", 0)) for a in asks)
+
+        total_volume = bid_volume + ask_volume
+        if total_volume == 0:
+            return {
+                "order_book_imbalance": 0.0,
+                "bid_volume": 0.0,
+                "ask_volume": 0.0,
+                "interpretation": "订单簿无挂单",
+            }
+
+        imbalance = (bid_volume - ask_volume) / total_volume
+
+        interpretation = ""
+        if imbalance > 0.3:
+            interpretation = "买盘压倒性优势，短期看涨"
+        elif imbalance > 0.15:
+            interpretation = "买盘略占优势"
+        elif imbalance < -0.3:
+            interpretation = "卖盘压倒性优势，短期看跌"
+        elif imbalance < -0.15:
+            interpretation = "卖盘略占优势"
+        else:
+            interpretation = "买卖盘相对平衡"
+
+        return {
+            "order_book_imbalance": float(imbalance),
+            "bid_volume": float(bid_volume),
+            "ask_volume": float(ask_volume),
+            "interpretation": interpretation,
+        }
+
+    def detect_liquidity_walls(
+        self,
+        order_book: Dict[str, Any],
+        threshold_multiplier: float = 3.0,
+    ) -> Dict[str, Any]:
+        """
+        检测订单簿中的"异常大单墙"
+        可能是主力诱导或真实支撑/阻力
+        """
+        bids = order_book.get("bids", [])
+        asks = order_book.get("asks", [])
+
+        if not bids or not asks:
+            return {
+                "bid_walls": [],
+                "ask_walls": [],
+                "interpretation": "订单簿数据不足",
+            }
+
+        # 计算平均挂单量
+        bid_amounts = [float(b.get("amount", 0)) for b in bids]
+        ask_amounts = [float(a.get("amount", 0)) for a in asks]
+
+        avg_bid_size = np.mean(bid_amounts) if bid_amounts else 0.0
+        avg_ask_size = np.mean(ask_amounts) if ask_amounts else 0.0
+
+        # 识别异常大单墙
+        bid_walls = []
+        for b in bids:
+            amount = float(b.get("amount", 0))
+            if amount > avg_bid_size * threshold_multiplier:
+                bid_walls.append({
+                    "price": float(b.get("price", 0)),
+                    "amount": amount,
+                    "multiplier": float(amount / avg_bid_size) if avg_bid_size > 0 else 0.0,
+                })
+
+        ask_walls = []
+        for a in asks:
+            amount = float(a.get("amount", 0))
+            if amount > avg_ask_size * threshold_multiplier:
+                ask_walls.append({
+                    "price": float(a.get("price", 0)),
+                    "amount": amount,
+                    "multiplier": float(amount / avg_ask_size) if avg_ask_size > 0 else 0.0,
+                })
+
+        interpretation = ""
+        if ask_walls and not bid_walls:
+            interpretation = "卖盘有大单墙，可能是主力压盘或真实阻力"
+        elif bid_walls and not ask_walls:
+            interpretation = "买盘有大单墙，可能是主力护盘或真实支撑"
+        elif ask_walls and bid_walls:
+            interpretation = "买卖盘均有大单墙，市场博弈激烈"
+        else:
+            interpretation = "无明显大单墙"
+
+        return {
+            "bid_walls": bid_walls[:5],  # 只返回前 5 个
+            "ask_walls": ask_walls[:5],
+            "interpretation": interpretation,
+        }
+
+    def estimate_whale_cost_basis(
+        self,
+        large_orders: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        基于大单加权平均价格估算主力成本
+        """
+        large_order_list = large_orders.get("large_orders", [])
+
+        if not large_order_list:
+            return {
+                "whale_cost_basis_long": None,
+                "whale_cost_basis_short": None,
+                "total_whale_volume_long": 0.0,
+                "total_whale_volume_short": 0.0,
+                "sample_size": 0,
+            }
+
+        buy_orders = [o for o in large_order_list if o.get("side") == "buy"]
+        sell_orders = [o for o in large_order_list if o.get("side") == "sell"]
+
+        # 计算多头成本
+        whale_cost_long = None
+        total_buy_volume = 0.0
+        if buy_orders:
+            total_buy_volume = sum(float(o.get("amount", 0)) for o in buy_orders)
+            if total_buy_volume > 0:
+                weighted_price = sum(float(o.get("price", 0)) * float(o.get("amount", 0)) for o in buy_orders) / total_buy_volume
+                whale_cost_long = float(weighted_price)
+
+        # 计算空头成本
+        whale_cost_short = None
+        total_sell_volume = 0.0
+        if sell_orders:
+            total_sell_volume = sum(float(o.get("amount", 0)) for o in sell_orders)
+            if total_sell_volume > 0:
+                weighted_price = sum(float(o.get("price", 0)) * float(o.get("amount", 0)) for o in sell_orders) / total_sell_volume
+                whale_cost_short = float(weighted_price)
+
+        return {
+            "whale_cost_basis_long": whale_cost_long,
+            "whale_cost_basis_short": whale_cost_short,
+            "total_whale_volume_long": float(total_buy_volume),
+            "total_whale_volume_short": float(total_sell_volume),
+            "sample_size": len(large_order_list),
+        }
+
 
 # 全局实例
 _whale_analysis_service = None

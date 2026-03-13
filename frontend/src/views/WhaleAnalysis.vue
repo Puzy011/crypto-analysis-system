@@ -905,9 +905,9 @@ const handleMarketChange = async () => {
 }
 
 const getRefreshInterval = () => {
-  if (tradeType.value === 'realtime') return 30000
-  if (tradeType.value === 'intraday') return 60000
-  return 120000
+  if (tradeType.value === 'realtime') return 10000   // 实时：10秒（1分钟6次）
+  if (tradeType.value === 'intraday') return 30000   // 日内：30秒（1分钟2次）
+  return 60000                                        // 其他：60秒（1分钟1次）
 }
 
 const startAutoRefresh = () => {
